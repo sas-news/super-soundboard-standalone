@@ -10,11 +10,12 @@
     "deploy:commands": "tsx src/index.ts --register"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.18.0",
+    "axios": "^1.13.2",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
     "libsodium-wrappers": "^0.7.13",
+    "opusscript": "^0.0.8",
     "ws": "^8.18.0"
   },
   "devDependencies": {

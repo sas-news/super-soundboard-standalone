@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import axios from "axios";
 import {
   AudioPlayer,
   AudioPlayerStatus,
@@ -11,6 +12,7 @@ import {
   createAudioResource,
   entersState,
   joinVoiceChannel,
+  EndBehaviorType,
   type DiscordGatewayAdapterCreator,
 } from "@discordjs/voice";
 import {
@@ -22,9 +24,13 @@ import {
   Routes,
   SlashCommandBuilder,
   VoiceBasedChannel,
+  MessageFlags,
 } from "discord.js";
 import dotenv from "dotenv";
-import { WebSocketServer } from "ws";
+import { OpusEncoder } from "@discordjs/opus";
+// Note: prism-media will fallback to opusscript if we rely on its decoder, 
+// but here we might want to ensure we use prism's abstraction. 
+import prism from "prism-media";
 
 type SoundMapping = {
   keywords: string[];
@@ -35,7 +41,6 @@ type SoundMapping = {
 type AppConfig = {
   mappings: SoundMapping[];
   cooldownMs: number;
-  wsPort?: number;
   lang?: string;
 };
 
@@ -43,15 +48,6 @@ type EnvConfig = {
   token: string;
   appId: string;
   guildId: string;
-  wsPort: number;
-};
-
-type HitPayload = {
-  type: string;
-  keyword: string;
-  text?: string;
-  ts?: number;
-  volume?: number;
 };
 
 type ResolvedMapping = SoundMapping & {
@@ -67,8 +63,8 @@ const log = (level: "info" | "warn" | "error", message: string, meta?: Record<st
 };
 
 const rootConfigPath = path.resolve(__dirname, "..", "..", "config.json");
-const sharedConfigPath = path.resolve(__dirname, "..", "..", "shared", "config.json"); // legacy
-const legacyConfigPath = path.resolve(__dirname, "..", "config.json"); // legacy
+const sharedConfigPath = path.resolve(__dirname, "..", "..", "shared", "config.json");
+const legacyConfigPath = path.resolve(__dirname, "..", "config.json");
 
 const readJsonFile = <T>(filePath: string): T => {
   const raw = fs.readFileSync(filePath, "utf8");
@@ -80,7 +76,7 @@ const clampVolume = (raw?: number): number => {
   return Math.min(Math.max(vol, 0), 2);
 };
 
-const resolveEnv = (defaultWsPort: number): EnvConfig => {
+const resolveEnv = (): EnvConfig => {
   dotenv.config({ path: path.resolve(__dirname, "../.env") });
   const read = (key: string) => {
     const value = process.env[key];
@@ -90,17 +86,10 @@ const resolveEnv = (defaultWsPort: number): EnvConfig => {
     return value;
   };
 
-  const wsPortRaw = process.env.WS_PORT || String(defaultWsPort);
-  const wsPort = Number(wsPortRaw);
-  if (Number.isNaN(wsPort)) {
-    throw new Error(`WS_PORT must be a number. Received "${wsPortRaw}"`);
-  }
-
   return {
     token: read("DISCORD_TOKEN"),
     appId: read("DISCORD_APP_ID"),
     guildId: read("GUILD_ID"),
-    wsPort,
   };
 };
 
@@ -114,20 +103,7 @@ const resolveAppConfig = (): AppConfig => {
   if (!Array.isArray(parsed.mappings) || parsed.mappings.length === 0) {
     throw new Error("config: mappings must be a non-empty array");
   }
-  parsed.mappings.forEach((m, idx) => {
-    if (!Array.isArray(m.keywords) || m.keywords.length === 0) {
-      throw new Error(`config: mappings[${idx}].keywords must be a non-empty array`);
-    }
-    if (!m.file) {
-      throw new Error(`config: mappings[${idx}].file is required`);
-    }
-    if (m.volume !== undefined && typeof m.volume !== "number") {
-      throw new Error(`config: mappings[${idx}].volume must be a number when provided`);
-    }
-  });
-  if (typeof parsed.cooldownMs !== "number" || parsed.cooldownMs < 0) {
-    throw new Error("config: cooldownMs must be a positive number");
-  }
+
   const normalizedMappings = parsed.mappings.map((m) => {
     const file = m.file || "";
     const withDir =
@@ -141,7 +117,7 @@ const resolveAppConfig = (): AppConfig => {
 };
 
 const appConfig = resolveAppConfig();
-const env = resolveEnv(appConfig.wsPort ?? 3210);
+const env = resolveEnv();
 
 const normalizeKeyword = (keyword: string) => keyword.toLowerCase();
 
@@ -151,42 +127,75 @@ const resolvedMappings: ResolvedMapping[] = appConfig.mappings.map((m) => ({
   filePath: path.isAbsolute(m.file) ? m.file : path.resolve(__dirname, "..", m.file),
 }));
 
-log("info", "Resolved mappings", {
-  count: resolvedMappings.length,
-  mappings: resolvedMappings.map((m) => ({
-    keywords: m.keywords,
-    file: m.filePath,
-    exists: fs.existsSync(m.filePath)
-  }))
-});
-
-resolvedMappings.forEach((m) => {
-  if (!fs.existsSync(m.filePath)) {
-    log("warn", `Sound file not found at ${m.filePath}. Place the mp3 before playing.`);
-  }
-});
-
-const getMappingForKeyword = (keyword?: string): ResolvedMapping | null => {
-  if (keyword) {
-    const normalized = normalizeKeyword(keyword);
-    const mapping = resolvedMappings.find((m) => m.keywords.some((kw) => normalizeKeyword(kw) === normalized));
-    if (mapping) return mapping;
-  }
-  return resolvedMappings[0] ?? null;
+const getMappingForText = (text: string): ResolvedMapping | null => {
+  if (!text) return null;
+  const normalized = normalizeKeyword(text);
+  const mapping = resolvedMappings.find((m) => m.keywords.some((kw) => normalized.includes(normalizeKeyword(kw))));
+  return mapping ?? null;
 };
 
-const allKeywords = Array.from(new Set(resolvedMappings.flatMap((m) => m.keywords)));
+// --- Custom Speech Service ---
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+async function resolveSpeechWithGoogle(buffer: Buffer, lang: string = "en-US") {
+  // Extracted Key
+  const key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw";
+  const profanityFilter = "1";
+  // Modified to use 16000Hz
+  const url = `https://www.google.com/speech-api/v2/recognize?output=json&lang=${lang}&key=${key}&pFilter=${profanityFilter}`;
+
+  try {
+    const response = await axios.post(url, buffer, {
+      headers: {
+        "Content-Type": "audio/l16; rate=16000;"
+      },
+      transformResponse: [
+        (data: string) => {
+          if (!data) return {};
+          const fixedData = data.replace('{"result":[]}', "").trim();
+          if (!fixedData) return {};
+          try {
+            const lines = fixedData.split('\n');
+            for (const line of lines) {
+              if (line.trim().length === 0) continue;
+              const json = JSON.parse(line);
+              if (json.result && json.result.length > 0) return json;
+            }
+            return JSON.parse(fixedData);
+          } catch (e) {
+            return {};
+          }
+        }
+      ]
+    });
+
+    if (response.data && response.data.result && response.data.result[0]) {
+      return response.data.result[0].alternative[0].transcript;
+    }
+  } catch (e: any) {
+    // log("error", "Google Speech API error", { msg: e.message });
+  }
+  return null;
+}
+
+// --- End Custom Speech Service ---
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+  ],
+});
+
 const audioPlayer: AudioPlayer = createAudioPlayer();
 const playbackQueue: { filePath: string; volume: number }[] = [];
 let voiceConnection: VoiceConnection | null = null;
-let lastHitAt = 0;
+const userCooldowns = new Map<string, number>();
 
 const commands = [
-  new SlashCommandBuilder().setName("join").setDescription("Join the voice channel you are in"),
-  new SlashCommandBuilder().setName("leave").setDescription("Leave the current voice channel"),
-  new SlashCommandBuilder().setName("testplay").setDescription("Play the configured sound once"),
+  new SlashCommandBuilder().setName("join").setDescription("Join the voice channel"),
+  new SlashCommandBuilder().setName("leave").setDescription("Leave the voice channel"),
+  new SlashCommandBuilder().setName("testplay").setDescription("Test playback"),
 ].map((command) => command.toJSON());
 
 const registerCommands = async () => {
@@ -195,346 +204,182 @@ const registerCommands = async () => {
   log("info", "Slash commands registered");
 };
 
-const subscribePlayer = (connection: VoiceConnection) => {
-  const subscription = connection.subscribe(audioPlayer);
-  log("info", "Audio player subscribed to voice connection", {
-    hasSubscription: !!subscription,
-    connectionStatus: connection.state.status
-  });
-  return subscription;
+const startPlaybackIfIdle = () => {
+  if (audioPlayer.state.status !== AudioPlayerStatus.Idle) return;
+  const next = playbackQueue.shift();
+  if (!next) return;
+  const resource = createAudioResource(next.filePath, { inlineVolume: true });
+  if (resource.volume) resource.volume.setVolume(next.volume);
+  audioPlayer.play(resource);
 };
 
-const setupConnectionRecovery = (connection: VoiceConnection) => {
-  connection.on("stateChange", async (oldState, newState) => {
-    log("info", "Voice connection state changed", {
-      from: oldState.status,
-      to: newState.status
-    });
+audioPlayer.on(AudioPlayerStatus.Idle, startPlaybackIfIdle);
 
-    if (newState.status === VoiceConnectionStatus.Disconnected) {
-      log("warn", "Voice connection disconnected", {
-        reason: newState.reason,
-        closeCode: "closeCode" in newState ? newState.closeCode : undefined
-      });
+const enqueuePlayback = (filePath: string, volume: number) => {
+  if (!fs.existsSync(filePath)) return;
+  playbackQueue.push({ filePath, volume });
+  startPlaybackIfIdle();
+};
 
-      if (
-        newState.reason === VoiceConnectionDisconnectReason.WebSocketClose &&
-        "closeCode" in newState &&
-        newState.closeCode === 4014
-      ) {
-        try {
-          await entersState(connection, VoiceConnectionStatus.Connecting, 5_000);
-        } catch {
-          log("error", "Failed to reconnect, destroying connection");
-          connection.destroy();
+const handleUserSpeaking = (userId: string, connection: VoiceConnection) => {
+  const receiver = connection.receiver;
+  const opusStream = receiver.subscribe(userId, {
+    end: {
+      behavior: EndBehaviorType.AfterSilence,
+      duration: 300,
+    },
+  });
+
+  // 1. Decode Opus to PCM (48kHz, Stereo)
+  const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+  decoder.on('error', (e) => log("warn", "Decoder error", { error: e.message }));
+
+  // 2. Transcode PCM to Mono 16kHz for Google Speech API
+  const transcoder = new prism.FFmpeg({
+    args: [
+      '-analyzeduration', '0',
+      '-loglevel', '0',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      '-i', '-',
+      '-f', 's16le',
+      '-ar', '16000',
+      '-ac', '1',
+    ],
+  });
+  transcoder.on('error', (e) => log("warn", "Transcoder error", { error: e.message }));
+
+  const bufferData: Buffer[] = [];
+
+  // Pipeline: Opus -> Decoder -> Transcoder -> Buffer
+  const stream = opusStream.pipe(decoder).pipe(transcoder);
+
+  stream.on('data', (chunk: Buffer) => {
+    bufferData.push(chunk);
+  });
+
+  stream.on('error', (err) => {
+    log("warn", "Stream pipeline error", { msg: err.message });
+  });
+
+  stream.on('end', async () => {
+    const buffer = Buffer.concat(bufferData);
+    if (buffer.length < 2000) return; // ~0.06s of 16k mono audio (32000 bytes/sec)
+
+    log("info", "Audio captured", { length: buffer.length, userId });
+
+    try {
+      // Send 16000Hz audio
+      const text = await resolveSpeechWithGoogle(buffer, appConfig.lang || "ja-JP");
+      if (text) {
+        log("info", "Recognized", { text, userId });
+
+        const now = Date.now();
+        const lastHit = userCooldowns.get(userId) || 0;
+
+        if (now - lastHit < appConfig.cooldownMs) {
+          log("info", "Cooldown active", { userId });
+          return;
         }
-      } else if (connection.rejoinAttempts < 5) {
-        log("info", "Attempting to rejoin", { attempt: connection.rejoinAttempts + 1 });
-        await new Promise((resolve) => setTimeout(resolve, (connection.rejoinAttempts + 1) * 1_000));
-        connection.rejoin();
-      } else {
-        log("error", "Max rejoin attempts reached, destroying connection");
-        connection.destroy();
+
+        const mapping = getMappingForText(text);
+        if (mapping) {
+          userCooldowns.set(userId, now);
+          log("info", "Hit!", { keyword: mapping.keywords, userId });
+          enqueuePlayback(mapping.filePath, mapping.volume);
+        }
       }
-    } else if (newState.status === VoiceConnectionStatus.Destroyed) {
-      log("warn", "Voice connection destroyed");
-      voiceConnection = null;
-    } else if (newState.status === VoiceConnectionStatus.Ready) {
-      log("info", "Voice connection ready");
+    } catch (e) {
+      log("error", "Speech processing failed", { error: String(e) });
     }
   });
 };
 
-const ensureVoiceConnection = async (channel: VoiceBasedChannel) => {
-  if (!channel) {
-    throw new Error("You must be in a voice channel");
-  }
-
-  log("info", "ensureVoiceConnection called", {
-    channelId: channel.id,
-    channelName: channel.name,
-    hasExistingConnection: !!voiceConnection,
-    existingStatus: voiceConnection?.state.status
+const subscribeReceiver = (connection: VoiceConnection) => {
+  connection.receiver.speaking.on('start', (userId) => {
+    handleUserSpeaking(userId, connection);
   });
+};
 
-  if (
-    voiceConnection &&
-    voiceConnection.joinConfig.channelId === channel.id &&
-    voiceConnection.state.status !== VoiceConnectionStatus.Destroyed
-  ) {
-    log("info", "Reusing existing voice connection");
+const ensureVoiceConnection = async (channel: VoiceBasedChannel) => {
+  if (!channel) throw new Error("Voice channel required");
+
+  if (voiceConnection && voiceConnection.joinConfig.channelId === channel.id) {
     return voiceConnection;
   }
-
-  if (voiceConnection) {
-    log("info", "Destroying existing voice connection before creating new one");
-    voiceConnection.destroy();
-  }
-
-  log("info", "Joining voice channel", {
-    channelId: channel.id,
-    guildId: channel.guild.id
-  });
+  if (voiceConnection) voiceConnection.destroy();
 
   const connection = joinVoiceChannel({
     channelId: channel.id,
     guildId: channel.guild.id,
     adapterCreator: channel.guild.voiceAdapterCreator as DiscordGatewayAdapterCreator,
     selfDeaf: false,
+    selfMute: false,
   });
 
-  setupConnectionRecovery(connection);
-  subscribePlayer(connection);
   voiceConnection = connection;
+  connection.subscribe(audioPlayer);
+  subscribeReceiver(connection); // Attach listener
 
-  log("info", "Waiting for voice connection to become ready");
   await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
-  log("info", "Voice connection established successfully");
-
   return connection;
 };
 
-const startPlaybackIfIdle = () => {
-  log("info", "startPlaybackIfIdle called", {
-    playerStatus: audioPlayer.state.status,
-    queueLength: playbackQueue.length
-  });
-
-  if (audioPlayer.state.status !== AudioPlayerStatus.Idle) {
-    log("info", "Player not idle, skipping", { status: audioPlayer.state.status });
-    return;
-  }
-
-  const next = playbackQueue.shift();
-  if (!next) {
-    log("info", "Queue empty, nothing to play");
-    return;
-  }
-
-  log("info", "Creating audio resource", { file: next.filePath, volume: next.volume });
-
-  const resource: AudioResource = createAudioResource(next.filePath, { inlineVolume: true });
-  if (resource.volume) {
-    resource.volume.setVolume(next.volume);
-  }
-  audioPlayer.play(resource);
-  log("info", "Started playback", { file: next.filePath, volume: next.volume, remaining: playbackQueue.length });
-};
-
-audioPlayer.on(AudioPlayerStatus.Idle, () => {
-  log("info", "Audio player became idle");
-  startPlaybackIfIdle();
-});
-
-audioPlayer.on(AudioPlayerStatus.Playing, () => {
-  log("info", "Audio player started playing");
-});
-
-audioPlayer.on(AudioPlayerStatus.Paused, () => {
-  log("info", "Audio player paused");
-});
-
-audioPlayer.on("error", (error) => {
-  log("error", "Audio player error", { error: error.message, stack: error.stack });
-  startPlaybackIfIdle();
-});
-
-const enqueuePlayback = (reason: string, filePath: string, volume: number) => {
-  log("info", "enqueuePlayback called", { reason, filePath, volume });
-
-  if (!fs.existsSync(filePath)) {
-    log("warn", "Sound file missing, skipping playback", { file: filePath, reason });
-    return;
-  }
-
-  const vol = clampVolume(volume);
-  playbackQueue.push({ filePath, volume: vol });
-  log("info", "Queued playback", {
-    reason,
-    queueLength: playbackQueue.length,
-    file: filePath,
-    volume: vol,
-    playerStatus: audioPlayer.state.status
-  });
-
-  startPlaybackIfIdle();
-};
-
-const handleJoin = async (interaction: ChatInputCommandInteraction) => {
-  const member = interaction.member as GuildMember;
-  const voiceChannel = member?.voice?.channel;
-  if (!voiceChannel) {
-    await interaction.reply({ content: "まずVCに参加してください。", ephemeral: true });
-    return;
-  }
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
   try {
-    await ensureVoiceConnection(voiceChannel);
-    await interaction.reply({ content: `Joined ${voiceChannel.name}`, ephemeral: true });
-  } catch (error: any) {
-    log("error", "Failed to join voice channel", { error: error.message });
-    await interaction.reply({ content: "VC参加に失敗しました。", ephemeral: true });
-  }
-};
-
-const handleLeave = async (interaction: ChatInputCommandInteraction) => {
-  if (!voiceConnection) {
-    await interaction.reply({ content: "まだVCにいません。", ephemeral: true });
-    return;
-  }
-  voiceConnection.destroy();
-  voiceConnection = null;
-  await interaction.reply({ content: "VCから退出しました。", ephemeral: true });
-};
-
-const handleTestPlay = async (interaction: ChatInputCommandInteraction) => {
-  const member = interaction.member as GuildMember;
-  const voiceChannel = member?.voice?.channel;
-  if (!voiceChannel) {
-    await interaction.reply({ content: "まずVCに参加してください。", ephemeral: true });
-    return;
-  }
-
-  const mapping = getMappingForKeyword();
-  if (!mapping) {
-    await interaction.reply({
-      content: "再生する音源が設定されていません。config.json を確認してください。",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  try {
-    await ensureVoiceConnection(voiceChannel);
-    enqueuePlayback("slash:testplay", mapping.filePath, mapping.volume);
-    await interaction.reply({ content: "サウンドを再生します。", ephemeral: true });
-  } catch (error: any) {
-    log("error", "Test play failed", { error: error.message });
-    await interaction.reply({ content: "再生に失敗しました。", ephemeral: true });
-  }
-};
-
-const startWebSocketServer = () => {
-  const wss = new WebSocketServer({ port: env.wsPort });
-  wss.on("connection", (ws, req) => {
-    const remote = req.socket.remoteAddress;
-    log("info", "WS client connected", { remote });
-
-    ws.on("message", (data) => {
-      try {
-        log("info", "WS message received", { raw: data.toString() });
-        const parsed = JSON.parse(data.toString()) as HitPayload;
-
-        if (parsed.type !== "hit") {
-          log("warn", "Unknown WS message type", { type: parsed.type });
-          return;
-        }
-        if (!parsed.keyword) {
-          log("warn", "WS hit missing keyword");
-          return;
-        }
-
-        log("info", "Processing hit", { keyword: parsed.keyword, text: parsed.text, volume: parsed.volume });
-
-        const now = Date.now();
-        const cooldownRemaining = appConfig.cooldownMs - (now - lastHitAt);
-        if (now - lastHitAt < appConfig.cooldownMs) {
-          log("info", "Hit ignored due to cooldown", {
-            keyword: parsed.keyword,
-            cooldownRemaining: Math.ceil(cooldownRemaining),
-            cooldownMs: appConfig.cooldownMs
-          });
-          return;
-        }
-
-        lastHitAt = now;
-
-        log("info", "Voice connection check", {
-          hasConnection: !!voiceConnection,
-          status: voiceConnection?.state.status
-        });
-
-        if (!voiceConnection || voiceConnection.state.status === VoiceConnectionStatus.Destroyed) {
-          log("warn", "Hit received but bot is not in a VC. Use /join first.", {
-            hasConnection: !!voiceConnection,
-            status: voiceConnection?.state.status
-          });
-          return;
-        }
-
-        const mapping = getMappingForKeyword(parsed.keyword);
-        if (!mapping) {
-          log("warn", "No sound mapped for keyword", { keyword: parsed.keyword });
-          return;
-        }
-
-        log("info", "Mapping found", { keyword: parsed.keyword, file: mapping.filePath });
-
-        const volume = clampVolume(parsed.volume ?? mapping.volume);
-        enqueuePlayback(`ws:${parsed.keyword}`, mapping.filePath, volume);
-        log("info", "Hit accepted and enqueued", { keyword: parsed.keyword, text: parsed.text, volume });
-      } catch (error: any) {
-        log("error", "Failed to parse WS message", { error: error.message, stack: error.stack });
+    if (interaction.commandName === "join") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const member = interaction.member as GuildMember;
+      if (member.voice.channel) {
+        await ensureVoiceConnection(member.voice.channel);
+        await interaction.editReply({ content: "Listening!" });
+      } else {
+        await interaction.editReply({ content: "Join VC first" });
       }
-    });
-
-    ws.on("close", () => log("info", "WS client disconnected", { remote }));
-    ws.on("error", (error) => log("error", "WS client error", { error: (error as Error).message }));
-  });
-
-  wss.on("listening", () => log("info", `WS server listening on ws://127.0.0.1:${env.wsPort}`));
-  wss.on("error", (error) => log("error", "WS server error", { error: (error as Error).message }));
-};
+    } else if (interaction.commandName === "leave") {
+      voiceConnection?.destroy();
+      voiceConnection = null;
+      await interaction.reply({ content: "Left.", flags: MessageFlags.Ephemeral });
+    } else if (interaction.commandName === "testplay") {
+      if (resolvedMappings[0]) {
+        enqueuePlayback(resolvedMappings[0].filePath, resolvedMappings[0].volume);
+        await interaction.reply({ content: "Playing...", flags: MessageFlags.Ephemeral });
+      }
+    }
+  } catch (error: any) {
+    log("error", "Command error", { error: error.message });
+    try {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: "An error occurred.", flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.followUp({ content: "An error occurred.", flags: MessageFlags.Ephemeral });
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+});
 
 const bootstrap = async () => {
-  log("info", "Starting bootstrap", {
-    cooldownMs: appConfig.cooldownMs,
-    mappingsCount: appConfig.mappings.length,
-    wsPort: env.wsPort
-  });
-
   const shouldRegisterOnly = process.argv.includes("--register");
-  await registerCommands();
-
   if (shouldRegisterOnly) {
-    log("info", "Register-only mode, exiting");
-    return;
+    await registerCommands();
+    process.exit(0);
   }
-
-  log("info", "Starting WebSocket server");
-  startWebSocketServer();
-
-  // Discord.js v15 will emit this as clientReady; use it now to avoid deprecation warning.
-  client.once("clientReady", (readyClient) => {
-    log("info", `Logged in as ${readyClient.user.tag}`);
-    log("info", `Awaiting keywords: ${allKeywords.join(", ")}`);
-    log("info", `Audio player status: ${audioPlayer.state.status}`);
-  });
-
-  client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    log("info", "Command received", { command: interaction.commandName });
-
-    if (interaction.commandName === "join") {
-      await handleJoin(interaction);
-    } else if (interaction.commandName === "leave") {
-      await handleLeave(interaction);
-    } else if (interaction.commandName === "testplay") {
-      await handleTestPlay(interaction);
-    }
-  });
-
-  log("info", "Logging in to Discord");
+  await registerCommands();
   await client.login(env.token);
+  log("info", "Started.");
 };
 
-bootstrap().catch((error) => {
-  log("error", "Fatal error", { error: (error as Error).message });
-  process.exit(1);
+process.on("unhandledRejection", (reason) => {
+  log("error", "Unhandled Rejection", { reason: String(reason) });
 });
 
-process.on("SIGINT", () => {
-  log("info", "Shutting down...");
-  voiceConnection?.destroy();
-  process.exit(0);
+process.on("uncaughtException", (error) => {
+  log("error", "Uncaught Exception", { error: error.message, stack: error.stack });
 });
+
+bootstrap();
