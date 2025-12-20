@@ -172,6 +172,22 @@ reloadConfig();
 
 const normalizeKeyword = (keyword: string) => keyword.toLowerCase();
 
+const validateKeywords = (newKeywords: string[], ignoreMapping?: SoundMapping): string | null => {
+  for (const newKw of newKeywords) {
+    const nKw = normalizeKeyword(newKw);
+    for (const mapping of appConfig.mappings) {
+      if (mapping === ignoreMapping) continue;
+      for (const existingKw of mapping.keywords) {
+        const eKw = normalizeKeyword(existingKw);
+        if (nKw === eKw) return `Keyword "${newKw}" is already used.`;
+        if (nKw.includes(eKw)) return `Keyword "${newKw}" contains existing keyword "${existingKw}".`;
+        if (eKw.includes(nKw)) return `Existing keyword "${existingKw}" contains new keyword "${newKw}".`;
+      }
+    }
+  }
+  return null;
+};
+
 const getMappingForText = (text: string): ResolvedMapping | null => {
   if (!text) return null;
   const normalized = normalizeKeyword(text);
@@ -240,8 +256,21 @@ async function resolveSpeechStreamWithGoogle(
       stream.on("error", () => resolve());
     });
   } catch (e: any) {
-    log("error", "Google Speech API error", { msg: e.message });
+    if (e.message !== "socket hang up" && e.code !== "ECONNRESET") {
+      log("error", "Google Speech API error", { msg: e.message });
+    }
   }
+}
+
+// Watch for config changes
+if (fs.existsSync(rootConfigPath)) {
+  fs.watch(rootConfigPath, (eventType) => {
+    if (eventType === "change") {
+      log("info", "Config file changed, reloading...");
+      // Debounce slightly to avoid read during write
+      setTimeout(() => reloadConfig(), 100);
+    }
+  });
 }
 
 // --- Discord Client ---
@@ -292,6 +321,27 @@ const commands = [
         .setDescription("Remove a sound mapping")
         .addStringOption((opt) =>
           opt.setName("keyword").setDescription("A keyword of the sound to remove").setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("edit")
+        .setDescription("Edit an existing sound mapping")
+        .addStringOption((opt) =>
+          opt.setName("target_keyword").setDescription("The keyword to find the sound").setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt.setName("new_keywords").setDescription("New keywords (comma separated)")
+        )
+        .addAttachmentOption((opt) =>
+          opt.setName("new_file").setDescription("New audio file")
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("new_volume")
+            .setDescription("New Volume Percentage (0-200)")
+            .setMinValue(0)
+            .setMaxValue(200)
         )
     )
     .addSubcommand((sub) =>
@@ -475,6 +525,12 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const validationError = validateKeywords(keywords);
+        if (validationError) {
+          await interaction.editReply(`Error: ${validationError}`);
+          return;
+        }
+
         // Validate attachment
         if (!attachment.contentType?.startsWith("audio/")) {
           await interaction.editReply("File must be an audio type.");
@@ -505,6 +561,74 @@ client.on("interactionCreate", async (interaction) => {
         saveConfig();
 
         await interaction.editReply({ content: `Added sound!\n**Keywords**: ${keywords.join(", ")}\n**File**: ${fileName}\n**Volume**: ${volume}%` });
+
+      } else if (sub === "edit") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const targetKeyword = interaction.options.getString("target_keyword", true);
+
+        // Find mapping
+        const mapping = appConfig.mappings.find(m => m.keywords.includes(targetKeyword));
+
+        if (!mapping) {
+          await interaction.editReply(`No sound found with keyword "${targetKeyword}".`);
+          return;
+        }
+
+        const newKeywordsInput = interaction.options.getString("new_keywords");
+        const newFile = interaction.options.getAttachment("new_file");
+        const newVolume = interaction.options.getInteger("new_volume");
+
+        let changes = [];
+
+        if (newKeywordsInput) {
+          const newKeywords = newKeywordsInput.split(",").map((k) => k.trim()).filter((k) => k.length > 0);
+          if (newKeywords.length === 0) {
+            await interaction.editReply("Invalid new keywords.");
+            return;
+          }
+
+          const err = validateKeywords(newKeywords, mapping);
+          if (err) {
+            await interaction.editReply(`Error: ${err}`);
+            return;
+          }
+
+          mapping.keywords = newKeywords;
+          changes.push(`Keywords updated: ${newKeywords.join(", ")}`);
+        }
+
+        if (newVolume !== null) {
+          mapping.volume = newVolume;
+          changes.push(`Volume updated: ${newVolume}%`);
+        }
+
+        if (newFile) {
+          if (!newFile.contentType?.startsWith("audio/")) {
+            await interaction.editReply("New file must be an audio type.");
+            return;
+          }
+
+          const fileName = newFile.name;
+          const savePath = path.join(soundsDir, fileName);
+
+          try {
+            const response = await axios.get(newFile.url, { responseType: "arraybuffer" });
+            fs.writeFileSync(savePath, response.data);
+            mapping.file = fileName;
+            changes.push(`File updated: ${fileName}`);
+          } catch (e: any) {
+            await interaction.editReply(`Failed to download file: ${e.message}`);
+            return;
+          }
+        }
+
+        if (changes.length === 0) {
+          await interaction.editReply("No changes specified.");
+          return;
+        }
+
+        saveConfig();
+        await interaction.editReply(`Updated sound!\n${changes.join("\n")}`);
 
       } else if (sub === "remove") {
         const keyword = interaction.options.getString("keyword", true);
