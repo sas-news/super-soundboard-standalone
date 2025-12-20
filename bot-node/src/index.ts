@@ -30,6 +30,7 @@ import {
 import dotenv from "dotenv";
 import { OpusEncoder } from "@discordjs/opus";
 import prism from "prism-media";
+import { Readable } from "stream";
 
 // --- Types ---
 
@@ -183,43 +184,64 @@ const getMappingForText = (text: string): ResolvedMapping | null => {
 
 // --- Google Speech API ---
 
-async function resolveSpeechWithGoogle(buffer: Buffer, lang: string = "ja-JP") {
-  const key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"; // Consider moving to .env
+// --- Google Speech API (Streaming) ---
+
+async function resolveSpeechStreamWithGoogle(
+  audioStream: Readable,
+  lang: string = "ja-JP",
+  onResult: (text: string) => void
+) {
+  const key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"; // Using existing key
   const profanityFilter = "1";
+  // The v2 API supports full duplex streaming if we pipe properly, 
+  // but here we just stream the upload and read the response stream.
   const url = `https://www.google.com/speech-api/v2/recognize?output=json&lang=${lang}&key=${key}&pFilter=${profanityFilter}`;
 
   try {
-    const response = await axios.post(url, buffer, {
+    const response = await axios.post(url, audioStream, {
       headers: {
         "Content-Type": "audio/l16; rate=16000;",
       },
-      transformResponse: [
-        (data: string) => {
-          if (!data) return {};
-          const fixedData = data.replace('{"result":[]}', "").trim();
-          if (!fixedData) return {};
-          try {
-            const lines = fixedData.split("\n");
-            for (const line of lines) {
-              if (line.trim().length === 0) continue;
-              const json = JSON.parse(line);
-              if (json.result && json.result.length > 0) return json;
-            }
-            return JSON.parse(fixedData);
-          } catch (e) {
-            return {};
-          }
-        },
-      ],
+      responseType: "stream",
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
     });
 
-    if (response.data && response.data.result && response.data.result[0]) {
-      return response.data.result[0].alternative[0].transcript;
-    }
+    const stream = response.data as Readable;
+    let buffer = "";
+
+    stream.on("data", (chunk: Buffer | string) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const json = JSON.parse(line);
+          // Check for result
+          if (json.result && json.result.length > 0) {
+            const res = json.result[0];
+            if (res.alternative && res.alternative.length > 0) {
+              const transcript = res.alternative[0].transcript;
+              if (transcript) {
+                onResult(transcript);
+              }
+            }
+          }
+        } catch (e) {
+          // ignore parsing/json errors
+        }
+      }
+    });
+
+    return new Promise<void>((resolve) => {
+      stream.on("end", () => resolve());
+      stream.on("error", () => resolve());
+    });
   } catch (e: any) {
-    // log("error", "Google Speech API error", { msg: e.message });
+    log("error", "Google Speech API error", { msg: e.message });
   }
-  return null;
 }
 
 // --- Discord Client ---
@@ -345,39 +367,31 @@ const handleUserSpeaking = (userId: string, connection: VoiceConnection) => {
     // log("warn", "FFmpeg transcoder error", { error: e.message });
   });
 
-  const bufferData: Buffer[] = [];
   const stream = opusStream.pipe(decoder).pipe(transcoder);
 
-  stream.on("data", (chunk: Buffer) => {
-    bufferData.push(chunk);
-  });
+  // Stream directly to Google
+  resolveSpeechStreamWithGoogle(stream, appConfig.lang || "ja-JP", (text) => {
+    log("info", "Recognized", { text, userId });
 
-  stream.on("end", async () => {
-    const buffer = Buffer.concat(bufferData);
-    if (buffer.length < 2000) return; // Ignore very short processing
+    const now = Date.now();
+    const lastHit = userCooldowns.get(userId) || 0;
 
-    try {
-      const text = await resolveSpeechWithGoogle(buffer, appConfig.lang || "ja-JP");
-      if (text) {
-        log("info", "Recognized", { text, userId });
+    if (now - lastHit < appConfig.cooldownMs) {
+      log("info", "Cooldown active", { userId });
+      return;
+    }
 
-        const now = Date.now();
-        const lastHit = userCooldowns.get(userId) || 0;
-
-        if (now - lastHit < appConfig.cooldownMs) {
-          log("info", "Cooldown active", { userId });
-          return;
-        }
-
-        const mapping = getMappingForText(text);
-        if (mapping) {
-          userCooldowns.set(userId, now);
-          log("info", "Hit!", { keyword: mapping.keywords, file: mapping.file, volume: mapping.volume });
-          enqueuePlayback(mapping.filePath, mapping.volume);
-        }
-      }
-    } catch (e: any) {
-      log("error", "Process error", { msg: e.message });
+    const mapping = getMappingForText(text);
+    if (mapping) {
+      // Update cooldown immediately to prevent double triggering on final result
+      userCooldowns.set(userId, now);
+      log("info", "Hit!", {
+        keyword: mapping.keywords,
+        file: mapping.file,
+        volume: mapping.volume,
+        currText: text,
+      });
+      enqueuePlayback(mapping.filePath, mapping.volume);
     }
   });
 
