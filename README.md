@@ -1,103 +1,126 @@
-# Discord VC 効果音ボット (Super Soundboard)
+# Discord VC 効果音ボット (Super Soundboard) - Modified
 
-質問や改善案があったとしても、元々私的利用のクソアプリとして開発したので受け付けておりません。ごめんね！
-
-https://qiita.com/kokushin/items/a21f2045a033b689383e
+> [!WARNING]
+> **【重要】身内用・個人利用についての注意**
+> このリポジトリはオリジナルの [Super Soundboard](https://github.com/kokushin/super-soundboard) をフォークし、個人的な用途に合わせて大幅に改造したものです。
+> 
+> *   **セキュリティ**: ユーザー入力に基づいてファイルを保存・削除する機能（`/sound add` 等）が含まれています。信頼できる身内のみのサーバーでの利用を想定しており、公開サーバーでの運用は推奨しません。
+> *   **安定性**: 個人用に突貫で作った機能も多く、エラー処理などが不十分な場合があります。
+> *   **Google Speech API**: 暫定的に公開APIキーが埋め込まれていますが、`.env` で独自の `GOOGLE_API_KEY` を設定することも可能です。
+> 
+> これらを理解した上で、自己責任でご利用ください。
 
 ## 概要
 
-Super Soundboard は、音声認識したキーワードをトリガーに Discord のボイスチャンネルへ効果音を流すローカルアプリです。Node.js で動く Discord Bot（音の再生）と、Chrome で動く STT（音声認識）フロントエンドを WebSocket で連携させるため、高価なサーバーや Whisper などの追加モデルは不要です。
+Discord のボイスチャンネル (VC) での発言を認識し、特定のキーワードに反応して効果音を再生するボットです。
+オリジナル版は Chrome の音声認識 (Web Speech API) を利用していましたが、この改造版では **Discord Bot 単体で完結** するように変更されています。ブラウザを開いておく必要はありません。
 
-## 必要なもの (Windows / Mac)
+### 主な変更点・機能
 
-- **共通**: Node.js 20 以上、Google Chrome（Web Speech API が安定しているため推奨）、Discord アカウント。
-- **Windows**: ffmpeg（[公式ビルド](https://github.com/BtbN/FFmpeg-Builds/releases) からダウンロードし、`PATH` に追加）、PowerShell 5 以上。
-- **macOS**: Homebrew または MacPorts。`brew install ffmpeg` で ffmpeg を導入してください。
-- **音源**: MP3 ファイルを `bot-node/sounds/` に配置します。著作権を確認のうえ使用してください。
+*   **Discord Native**: 音声認識も Node.js アプリケーション内で行います（Chrome 不要）。
+*   **コマンドによる管理**: 効果音の追加、削除、編集が Discord のスラッシュコマンド (`/sound`) だけで完結します。
+*   **ファイルダウンロード**: `/sound add` コマンドで音声ファイルを添付するだけで、自動的にサーバーへダウンロート・保存されます。
+*   **連続音声認識**: 会話の途中の単語も拾えるように、逐次認識を行っています。
+*   **ボリューム調整**: 効果音ごとに音量をパーセンテージで設定可能です。
+*   **自動切断**: チャンネルに誰もいなくなると自動的に退室します。
 
-## 設定手順
+## 必要なもの
 
-### ローカル環境の構築
+*   **Node.js**: v20 以上推奨
+*   **FFmpeg**: システムの PATH に通っている必要があります。音声の変換に使用します。
+*   **Discord Bot Token**: Developer Portal で取得したもの。
 
-1. 任意のフォルダーで `git clone https://github.com/kokushin/super-soundboard` を実行し、`cd super-soundboard`。
-2. 依存パッケージを一括で導入します。
-   ```bash
-   npm run init
-   ```
-   これによりリポジトリ直下、`bot-node/`、`stt-web/` の `npm install` が一度に走ります。
+## インストールと設定
 
-### Discord API Key の取得と設定
+### 1. 準備
 
-1. [Discord Developer Portal](https://discord.com/developers/applications) で新規アプリケーションを作成。
-2. 「General Information」タブにある **Application ID** をコピー → これが `DISCORD_APP_ID` です。
-3. 「Bot」タブで Bot を追加し、表示された **Token** をコピー（必要に応じて Regenerate） → これが `DISCORD_TOKEN` です。
-4. Discord クライアントの「設定 > 詳細設定」で Developer Mode をオンにし、Bot を招待したいサーバー名を右クリックして **ID をコピー** → これが `GUILD_ID` です。
-5. `bot-node/.env.example` を `.env` にリネームし、以下を入力します。
-   ```
-   DISCORD_TOKEN=取得した Bot Token
-   DISCORD_APP_ID=アプリケーション ID
-   GUILD_ID=Botを招待するサーバー(ギルド)の ID
-   WS_PORT=3210 など任意の空きポート
-   ```
+リポジトリをクローンし、依存パッケージをインストールします。
+Web UI 関連のファイルも残っていますが、基本的には `bot-node` ディレクトリのみ使用します。
 
-### Discord Bot の作成、権限設定とサーバ連携
+```bash
+# 全体の依存関係インストール（推奨）
+npm run init
 
-1. Developer Portal の 「OAuth2 > URL Generator」で `bot` と `applications.commands` を選択します。
-2. 下部の **Bot Permissions** で少なくとも「Send Messages」「Connect」「Speak」「Use Slash Commands」をチェックし、必要に応じて追加権限を付与します。
-3. ページ最下部の URL をコピーし、ブラウザで開きます。Discord にログインしている状態で、招待したいサーバーをプルダウンから選択し、「続行」→「認証」の順に進み、表示された CAPTCHA を完了すると Bot がサーバーに参加します（サーバーで「サーバーを管理」権限が必要）。
-4. 初回のみ Bot のスラッシュコマンドを登録します。
-   ```bash
-   cd bot-node
-   npm run deploy:commands
-   ```
+# または bot-node のみ
+cd bot-node
+npm install
+```
 
-### 検出ワードと音源の設定
+### 2. 環境変数の設定
 
-1. リポジトリ直下の `config.json` を編集します。
-   ```json
-   {
-     "wsPort": 3210,
-     "lang": "ja-JP",
-     "cooldownMs": 2500,
-     "mappings": [{ "keywords": ["なにこれ", "何これ"], "file": "nanikore.mp3", "volume": 1 }]
-   }
-   ```
-2. `keywords` には認識したい発話を配列で指定します。最初の要素がデフォルト再生に使われます。
-3. `file` は `bot-node/sounds/` 配下の mp3 名。相対パスも指定できます。
-4. `volume` は 0〜2 の範囲で調整可能。2.0 で約 2 倍、0 で無音になります。
+`bot-node` ディレクトリにある `.env.example` をコピーして `.env` を作成し、中身を書き換えます。
 
-## 使い方
+```ini
+DISCORD_TOKEN=あなたのBotトークン
+DISCORD_APP_ID=あなたのアプリケーションID
+GUILD_ID=テスト用サーバーID（指定しない場合はグローバルコマンドとして登録されます）
+GOOGLE_API_KEY=あなたのGoogle APIキー（任意。未指定時は内蔵の公開キーを使用）
+```
 
-### アプリ起動
+> **Note**: `WS_PORT` は現在使用していません。
 
-1. ルートディレクトリで以下を実行して Bot と Web UI を同時に立ち上げます。
-   ```bash
-   npm run dev
-   ```
-2. 運用時は `npm run build` → `npm run start` でビルド済み環境を利用できます。
+### 3. コマンドの登録
 
-### Discord の操作
+初回起動前やコマンド定義を変更した際は、以下のコマンドを実行して Discord にスラッシュコマンドを登録します。
 
-1. Bot がオンラインになったら、対象サーバーの任意のテキストチャンネルで `/join` を実行して VC に参加させます。
-2. `/testplay` を使うと現在の設定でサウンドが再生されるかを確認できます。
-3. 切断したい場合は `/leave` を送信してください。
+```bash
+cd bot-node
+npm run deploy:commands
+```
 
-### Chrome の操作
+## 起動方法
 
-1. `npm run dev` 実行中に表示される `stt-web` の URL（例: `http://127.0.0.1:5173`）を Chrome で開きます。
-2. ページでマイク権限を許可し、「Start」ボタンを押すと音声認識が開始されます。
-3. 登録済みのワードを発話すると WebSocket 経由で Bot に通知され、Discord VC へ効果音が流れます。
+ルートディレクトリから以下のコマンドで Bot を起動します。
 
-## FAQ
+```bash
+# Botのみ起動（推奨）
+npm run dev:bot
+```
 
-- **Q. 音が再生されません。**  
-  A. `bot-node/sounds/` に mp3 が存在するか、`config.json` のパスが正しいか確認してください。`npm run dev` のターミナルに「Sound file not found」が出ていないかもチェックしましょう。
+起動後、コンソールに `Logged in as ...` と表示されれば成功です。
 
-- **Q. Chrome で「Web Speech API が使えません」と表示されます。**  
-  A. Chrome 最新版で開き、アドレスバー左側のマイク権限を許可してください。Safari や Firefox では動作しません。
+## 使い方（コマンド）
 
-- **Q. Bot が VC に入っているのにキーワードを認識してくれません。**  
-  A. `config.json` の `wsPort` と `.env` の `WS_PORT` が一致しているか確認し、`npm run dev` を再起動してください。また、`cooldownMs` の値が短すぎると連続ヒットが制限されます。
+Bot がサーバーに参加している状態で、以下のスラッシュコマンドを使用できます。
 
-- **Q. 別のサーバーでも使いたい場合は？**  
-  A. Bot を追加したいサーバーの ID を `.env` の `GUILD_ID` に追記して `npm run deploy:commands` を再実行するか、各サーバー用にアプリケーションを分けて運用してください。
+### 基本操作
+*   `/join`: Bot を現在のボイスチャンネルに参加させます。音声認識が開始されます。
+*   `/leave`: Bot を切断します。
+*   `/testplay`: テスト音声を再生し、動作確認を行います。
+*   `/help`: コマンドのヘルプを表示します。
+
+### サウンドボード管理
+*   `/sound add [keyword] [file] [volume]`: 新しい効果音を登録します。
+    *   `keyword`: 反応させたい言葉（カンマ区切りで複数指定可）
+    *   `file`: 音声ファイルを添付（mp3推奨）
+    *   `volume`: 音量（0〜200%、デフォルト100）
+*   `/sound remove [keyword]`: 登録済みの効果音を削除します（キーワード補完あり）。
+*   `/sound edit [target_keyword] ...`: 既存の効果音の設定（キーワード、ファイル、音量）を変更します。
+*   `/sound list`: 登録されている効果音の一覧を表示します。
+
+## 設定ファイル (config.json)
+
+`root/config.json` に設定が保存されます。コマンドで変更すると自動的に書き換わりますが、手動で編集することも可能です。
+手動編集した場合、Bot は自動的に設定をリロードします。
+
+```json
+{
+  "mappings": [
+    {
+      "keywords": ["挨拶", "こんにちは"],
+      "file": "hello.mp3",
+      "volume": 100
+    }
+  ],
+  "cooldownMs": 2500,
+  "lang": "ja-JP"
+}
+```
+
+*   `cooldownMs`: 連続再生を防ぐクールダウン時間（ミリ秒）
+*   `lang`: 音声認識の言語設定
+
+## ライセンス / クレジット
+
+Original Code by [kokushin](https://github.com/kokushin/super-soundboard)
+Forked & Modified for personal use.

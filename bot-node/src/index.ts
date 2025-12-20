@@ -53,6 +53,7 @@ type EnvConfig = {
   token: string;
   appId: string;
   guildId?: string;
+  googleApiKey?: string;
 };
 
 type ResolvedMapping = SoundMapping & {
@@ -162,6 +163,7 @@ const resolveEnv = (): EnvConfig => {
     token: read("DISCORD_TOKEN"),
     appId: read("DISCORD_APP_ID"),
     guildId: process.env["GUILD_ID"],
+    googleApiKey: process.env["GOOGLE_API_KEY"],
   };
 };
 
@@ -209,7 +211,8 @@ async function resolveSpeechStreamWithGoogle(
   lang: string = "ja-JP",
   onResult: (text: string) => void
 ) {
-  const key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"; // Using existing key
+  // Use user-provided key if available, otherwise fallback to the hardcoded chromium key
+  const key = env.googleApiKey || "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw";
   const profanityFilter = "1";
   // The v2 API supports full duplex streaming if we pipe properly, 
   // but here we just stream the upload and read the response stream.
