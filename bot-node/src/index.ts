@@ -52,7 +52,7 @@ type AppConfig = {
 type EnvConfig = {
   token: string;
   appId: string;
-  guildId: string;
+  guildId?: string;
 };
 
 type ResolvedMapping = SoundMapping & {
@@ -161,7 +161,7 @@ const resolveEnv = (): EnvConfig => {
   return {
     token: read("DISCORD_TOKEN"),
     appId: read("DISCORD_APP_ID"),
-    guildId: read("GUILD_ID"),
+    guildId: process.env["GUILD_ID"],
   };
 };
 
@@ -362,8 +362,14 @@ const commands = [
 
 const registerCommands = async () => {
   const rest = new REST({ version: "10" }).setToken(env.token);
-  await rest.put(Routes.applicationGuildCommands(env.appId, env.guildId), { body: commands });
-  log("info", "Slash commands registered");
+
+  if (env.guildId) {
+    await rest.put(Routes.applicationGuildCommands(env.appId, env.guildId), { body: commands });
+    log("info", `Slash commands registered (Guild: ${env.guildId})`);
+  } else {
+    await rest.put(Routes.applicationCommands(env.appId), { body: commands });
+    log("info", "Slash commands registered (Global)");
+  }
 };
 
 // --- Playback Logic ---
@@ -762,6 +768,29 @@ client.on("interactionCreate", async (interaction) => {
       }
     } catch (e) {
       // ignore
+    }
+  }
+});
+
+// --- Auto-Disconnect ---
+
+client.on("voiceStateUpdate", (oldState, newState) => {
+  if (!voiceConnection || voiceConnection.state.status === VoiceConnectionStatus.Destroyed) return;
+
+  const botChannelId = voiceConnection.joinConfig.channelId;
+  if (!botChannelId) return;
+
+  const changedChannelId = oldState.channelId || newState.channelId;
+
+  // Ideally, we only care if someone LEFT the bot's channel.
+  // But checking on any update to our channel is safe.
+  if (botChannelId === changedChannelId) {
+    // Get the channel from cache
+    const channel = client.channels.cache.get(botChannelId) as VoiceBasedChannel;
+    if (channel && channel.members.size === 1) {
+      log("info", "Auto-disconnecting because channel is empty.");
+      voiceConnection.destroy();
+      voiceConnection = null;
     }
   }
 });
