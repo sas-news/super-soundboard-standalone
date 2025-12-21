@@ -296,37 +296,37 @@ const userCooldowns = new Map<string, number>();
 // --- Slash Commands ---
 
 const commands = [
-  new SlashCommandBuilder().setName("join").setDescription("Join the voice channel"),
-  new SlashCommandBuilder().setName("leave").setDescription("Leave the voice channel"),
+  new SlashCommandBuilder().setName("join").setDescription("ボイスチャンネルに参加"),
+  new SlashCommandBuilder().setName("leave").setDescription("ボイスチャンネルから退出"),
   new SlashCommandBuilder()
     .setName("play")
-    .setDescription("Play a sound by keyword")
+    .setDescription("キーワードで効果音を再生")
     .addStringOption((opt) =>
       opt
         .setName("keyword")
-        .setDescription("Keyword of the sound to play")
+        .setDescription("再生する効果音のキーワード")
         .setRequired(true)
         .setAutocomplete(true)
     ),
-  new SlashCommandBuilder().setName("config").setDescription("Show config.json contents"),
-  new SlashCommandBuilder().setName("help").setDescription("Show help message"),
+  new SlashCommandBuilder().setName("config").setDescription("config.json の内容を表示"),
+  new SlashCommandBuilder().setName("help").setDescription("ヘルプを表示"),
   new SlashCommandBuilder()
     .setName("sound")
-    .setDescription("Manage Soundboard")
+    .setDescription("効果音を管理")
     .addSubcommand((sub) =>
       sub
         .setName("add")
-        .setDescription("Add a new sound mapping")
+        .setDescription("新しい効果音を登録")
         .addStringOption((opt) =>
-          opt.setName("keyword").setDescription("Keywords (comma separated)").setRequired(true)
+          opt.setName("keyword").setDescription("キーワード（カンマ区切りで複数可）").setRequired(true)
         )
         .addAttachmentOption((opt) =>
-          opt.setName("file").setDescription("Audio file (mp3/wav)").setRequired(true)
+          opt.setName("file").setDescription("音声ファイル（mp3/wav）").setRequired(true)
         )
         .addIntegerOption((opt) =>
           opt
             .setName("volume")
-            .setDescription("Volume Percentage (0-200, default 100)")
+            .setDescription("音量（0-200%、デフォルト100）")
             .setMinValue(0)
             .setMaxValue(200)
         )
@@ -334,11 +334,11 @@ const commands = [
     .addSubcommand((sub) =>
       sub
         .setName("remove")
-        .setDescription("Remove a sound mapping")
+        .setDescription("効果音を削除")
         .addStringOption((opt) =>
           opt
             .setName("keyword")
-            .setDescription("A keyword of the sound to remove")
+            .setDescription("削除する効果音のキーワード")
             .setRequired(true)
             .setAutocomplete(true)
         )
@@ -346,30 +346,30 @@ const commands = [
     .addSubcommand((sub) =>
       sub
         .setName("edit")
-        .setDescription("Edit an existing sound mapping")
+        .setDescription("効果音の設定を編集")
         .addStringOption((opt) =>
           opt
             .setName("target_keyword")
-            .setDescription("The keyword to find the sound")
+            .setDescription("編集対象のキーワード")
             .setRequired(true)
             .setAutocomplete(true)
         )
         .addStringOption((opt) =>
-          opt.setName("new_keywords").setDescription("New keywords (comma separated)")
+          opt.setName("new_keywords").setDescription("新しいキーワード（カンマ区切りで複数可）")
         )
         .addAttachmentOption((opt) =>
-          opt.setName("new_file").setDescription("New audio file")
+          opt.setName("new_file").setDescription("新しい音声ファイル")
         )
         .addIntegerOption((opt) =>
           opt
             .setName("new_volume")
-            .setDescription("New Volume Percentage (0-200)")
+            .setDescription("新しい音量（0-200%）")
             .setMinValue(0)
             .setMaxValue(200)
         )
     )
     .addSubcommand((sub) =>
-      sub.setName("list").setDescription("List all registered sounds")
+      sub.setName("list").setDescription("登録済みの効果音一覧")
     ),
 ].map((command) => command.toJSON());
 
@@ -558,16 +558,16 @@ client.on("interactionCreate", async (interaction) => {
         .setTitle("🤖 Super Soundboard Help")
         .setColor(0x0099FF)
         .addFields(
-          { name: "/join", value: "Join your voice channel and start listening." },
-          { name: "/leave", value: "Leave the voice channel." },
-          { name: "/play <keyword>", value: "Play a registered sound by keyword." },
-          { name: "/config", value: "Show config.json as an attachment." },
-          { name: "/sound list", value: "List all registered sound mappings." },
-          { name: "/sound add <keyword> <file> [volume]", value: "Register a new sound. Keywords can be comma-separated." },
-          { name: "/sound edit <target> ...", value: "Edit an existing sound's keywords, file, or volume." },
-          { name: "/sound remove <keyword>", value: "Remove a sound mapping." },
+          { name: "/join", value: "ボイスチャンネルに参加して音声認識を開始します。" },
+          { name: "/leave", value: "ボイスチャンネルから退出します。" },
+          { name: "/play <keyword>", value: "キーワードを指定して効果音を再生します。" },
+          { name: "/config", value: "config.json をファイルとして表示します。" },
+          { name: "/sound list", value: "登録済みの効果音一覧を表示します。" },
+          { name: "/sound add <keyword> <file> [volume]", value: "新しい効果音を登録します。キーワードはカンマ区切りで複数指定可。" },
+          { name: "/sound edit <target> ...", value: "既存の効果音の設定を編集します。" },
+          { name: "/sound remove <keyword>", value: "効果音を削除します。" },
         )
-        .setFooter({ text: "Speak the keywords to play sounds!" });
+        .setFooter({ text: "キーワードを話すと効果音が再生されます！" });
 
       await interaction.reply({ embeds: [embed] });
 
