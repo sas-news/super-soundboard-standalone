@@ -1,0 +1,15 @@
+[Unit]
+Description=Super Soundboard Bot
+After=network.target
+
+[Service]
+Type=simple
+User=sasnews
+Group=sasnews
+WorkingDirectory=/home/sasnews/super-soundboard-standalone
+ExecStart=/usr/bin/npm run dev:bot
+Restart=always
+EnvironmentFile=/home/sasnews/super-soundboard-standalone/bot-node/.env
+
+[Install]
+WantedBy=multi-user.target
