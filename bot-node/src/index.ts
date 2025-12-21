@@ -298,7 +298,17 @@ const userCooldowns = new Map<string, number>();
 const commands = [
   new SlashCommandBuilder().setName("join").setDescription("Join the voice channel"),
   new SlashCommandBuilder().setName("leave").setDescription("Leave the voice channel"),
-  new SlashCommandBuilder().setName("testplay").setDescription("Test playback"),
+  new SlashCommandBuilder()
+    .setName("play")
+    .setDescription("Play a sound by keyword")
+    .addStringOption((opt) =>
+      opt
+        .setName("keyword")
+        .setDescription("Keyword of the sound to play")
+        .setRequired(true)
+        .setAutocomplete(true)
+    ),
+  new SlashCommandBuilder().setName("config").setDescription("Show config.json contents"),
   new SlashCommandBuilder().setName("help").setDescription("Show help message"),
   new SlashCommandBuilder()
     .setName("sound")
@@ -506,7 +516,7 @@ client.on("interactionCreate", async (interaction) => {
   // --- Autocomplete Handling ---
   if (interaction.isAutocomplete()) {
     const focusedOption = interaction.options.getFocused(true);
-    if (focusedOption.name === "target_keyword" || focusedOption.name === "keyword") {
+    if (focusedOption.name === "target_keyword" || focusedOption.name === "keyword") {  // Covers /sound edit, /sound remove, and /play
       const focusedValue = focusedOption.value.toLowerCase();
       // Collect all keywords from all mappings
       const allKeywords = appConfig.mappings.flatMap((m) => m.keywords);
@@ -550,7 +560,8 @@ client.on("interactionCreate", async (interaction) => {
         .addFields(
           { name: "/join", value: "Join your voice channel and start listening." },
           { name: "/leave", value: "Leave the voice channel." },
-          { name: "/testplay", value: "Play a test sound to check volume." },
+          { name: "/play <keyword>", value: "Play a registered sound by keyword." },
+          { name: "/config", value: "Show config.json as an attachment." },
           { name: "/sound list", value: "List all registered sound mappings." },
           { name: "/sound add <keyword> <file> [volume]", value: "Register a new sound. Keywords can be comma-separated." },
           { name: "/sound edit <target> ...", value: "Edit an existing sound's keywords, file, or volume." },
@@ -582,17 +593,37 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [createEmbed("Disconnected", "Left the voice channel.", 0x0099FF)]
       });
 
-    } else if (commandName === "testplay") {
-      if (resolvedMappings[0]) {
-        enqueuePlayback(resolvedMappings[0].filePath, resolvedMappings[0].volume);
-        await interaction.reply({
-          embeds: [createEmbed("Test Play", "Playing the first registered sound...", 0x0099FF)]
-        });
+    } else if (commandName === "play") {
+      const keyword = interaction.options.getString("keyword", true);
+      const mapping = appConfig.mappings.find(m =>
+        m.keywords.some(kw => normalizeKeyword(kw) === normalizeKeyword(keyword))
+      );
+
+      if (mapping) {
+        const resolved = resolvedMappings.find(rm => rm.file === mapping.file);
+        if (resolved) {
+          enqueuePlayback(resolved.filePath, resolved.volume);
+          await interaction.reply({
+            embeds: [createEmbed("▶️ Playing", `Playing sound for keyword "**${keyword}**"`, 0x0099FF)]
+          });
+        } else {
+          await interaction.reply({
+            embeds: [createErrorEmbed(`Sound file not found for keyword "${keyword}".`)],
+            flags: MessageFlags.Ephemeral
+          });
+        }
       } else {
         await interaction.reply({
-          embeds: [createErrorEmbed("No sounds configured to test with.")]
+          embeds: [createErrorEmbed(`No sound found with keyword "${keyword}".`)],
+          flags: MessageFlags.Ephemeral
         });
       }
+
+    } else if (commandName === "config") {
+      await interaction.reply({
+        content: "📄 Current config.json:",
+        files: [{ attachment: rootConfigPath, name: "config.json" }]
+      });
 
     } else if (commandName === "sound") {
       const sub = interaction.options.getSubcommand();
