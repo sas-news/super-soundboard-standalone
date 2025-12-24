@@ -33,6 +33,7 @@ import dotenv from "dotenv";
 import { OpusEncoder } from "@discordjs/opus";
 import prism from "prism-media";
 import { Readable } from "stream";
+import { createApiServer } from "./api";
 
 // --- Types ---
 
@@ -63,7 +64,11 @@ type ResolvedMapping = SoundMapping & {
 
 // --- Logger ---
 
-const log = (level: "info" | "warn" | "error", message: string, meta?: Record<string, unknown>) => {
+const log = (
+  level: "info" | "warn" | "error",
+  message: string,
+  meta?: Record<string, unknown>
+) => {
   const timestamp = new Date().toISOString();
   const suffix = meta ? ` ${JSON.stringify(meta)}` : "";
   // eslint-disable-next-line no-console
@@ -176,7 +181,10 @@ reloadConfig();
 
 const normalizeKeyword = (keyword: string) => keyword.toLowerCase();
 
-const validateKeywords = (newKeywords: string[], ignoreMapping?: SoundMapping): string | null => {
+const validateKeywords = (
+  newKeywords: string[],
+  ignoreMapping?: SoundMapping
+): string | null => {
   for (const newKw of newKeywords) {
     const nKw = normalizeKeyword(newKw);
     for (const mapping of appConfig.mappings) {
@@ -184,8 +192,10 @@ const validateKeywords = (newKeywords: string[], ignoreMapping?: SoundMapping): 
       for (const existingKw of mapping.keywords) {
         const eKw = normalizeKeyword(existingKw);
         if (nKw === eKw) return `Keyword "${newKw}" is already used.`;
-        if (nKw.includes(eKw)) return `Keyword "${newKw}" contains existing keyword "${existingKw}".`;
-        if (eKw.includes(nKw)) return `Existing keyword "${existingKw}" contains new keyword "${newKw}".`;
+        if (nKw.includes(eKw))
+          return `Keyword "${newKw}" contains existing keyword "${existingKw}".`;
+        if (eKw.includes(nKw))
+          return `Existing keyword "${existingKw}" contains new keyword "${newKw}".`;
       }
     }
   }
@@ -214,7 +224,7 @@ async function resolveSpeechStreamWithGoogle(
   // Use user-provided key if available, otherwise fallback to the hardcoded chromium key
   const key = env.googleApiKey || "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw";
   const profanityFilter = "1";
-  // The v2 API supports full duplex streaming if we pipe properly, 
+  // The v2 API supports full duplex streaming if we pipe properly,
   // but here we just stream the upload and read the response stream.
   const url = `https://www.google.com/speech-api/v2/recognize?output=json&lang=${lang}&key=${key}&pFilter=${profanityFilter}`;
 
@@ -296,8 +306,12 @@ const userCooldowns = new Map<string, number>();
 // --- Slash Commands ---
 
 const commands = [
-  new SlashCommandBuilder().setName("join").setDescription("ボイスチャンネルに参加"),
-  new SlashCommandBuilder().setName("leave").setDescription("ボイスチャンネルから退出"),
+  new SlashCommandBuilder()
+    .setName("join")
+    .setDescription("ボイスチャンネルに参加"),
+  new SlashCommandBuilder()
+    .setName("leave")
+    .setDescription("ボイスチャンネルから退出"),
   new SlashCommandBuilder()
     .setName("play")
     .setDescription("キーワードで効果音を再生")
@@ -308,7 +322,9 @@ const commands = [
         .setRequired(true)
         .setAutocomplete(true)
     ),
-  new SlashCommandBuilder().setName("config").setDescription("config.json の内容を表示"),
+  new SlashCommandBuilder()
+    .setName("config")
+    .setDescription("config.json の内容を表示"),
   new SlashCommandBuilder().setName("help").setDescription("ヘルプを表示"),
   new SlashCommandBuilder()
     .setName("sound")
@@ -318,10 +334,16 @@ const commands = [
         .setName("add")
         .setDescription("新しい効果音を登録")
         .addStringOption((opt) =>
-          opt.setName("keyword").setDescription("キーワード（カンマ区切りで複数可）").setRequired(true)
+          opt
+            .setName("keyword")
+            .setDescription("キーワード（カンマ区切りで複数可）")
+            .setRequired(true)
         )
         .addAttachmentOption((opt) =>
-          opt.setName("file").setDescription("音声ファイル（mp3/wav）").setRequired(true)
+          opt
+            .setName("file")
+            .setDescription("音声ファイル（mp3/wav）")
+            .setRequired(true)
         )
         .addIntegerOption((opt) =>
           opt
@@ -355,7 +377,9 @@ const commands = [
             .setAutocomplete(true)
         )
         .addStringOption((opt) =>
-          opt.setName("new_keywords").setDescription("新しいキーワード（カンマ区切りで複数可）")
+          opt
+            .setName("new_keywords")
+            .setDescription("新しいキーワード（カンマ区切りで複数可）")
         )
         .addAttachmentOption((opt) =>
           opt.setName("new_file").setDescription("新しい音声ファイル")
@@ -377,7 +401,9 @@ const registerCommands = async () => {
   const rest = new REST({ version: "10" }).setToken(env.token);
 
   if (env.guildId) {
-    await rest.put(Routes.applicationGuildCommands(env.appId, env.guildId), { body: commands });
+    await rest.put(Routes.applicationGuildCommands(env.appId, env.guildId), {
+      body: commands,
+    });
     log("info", `Slash commands registered (Guild: ${env.guildId})`);
   } else {
     await rest.put(Routes.applicationCommands(env.appId), { body: commands });
@@ -425,22 +451,35 @@ const handleUserSpeaking = (userId: string, connection: VoiceConnection) => {
     // log("warn", "Opus stream error", { error: e.message });
   });
 
-  const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+  const decoder = new prism.opus.Decoder({
+    rate: 48000,
+    channels: 2,
+    frameSize: 960,
+  });
   decoder.on("error", (e) => {
     // log("warn", "Opus decoder error", { error: e.message });
   });
 
   const transcoder = new prism.FFmpeg({
     args: [
-      "-analyzeduration", "0",
-      "-loglevel", "0",
-      "-f", "s16le",
-      "-ar", "48000",
-      "-ac", "2",
-      "-i", "-",
-      "-f", "s16le",
-      "-ar", "16000",
-      "-ac", "1",
+      "-analyzeduration",
+      "0",
+      "-loglevel",
+      "0",
+      "-f",
+      "s16le",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      "-i",
+      "-",
+      "-f",
+      "s16le",
+      "-ar",
+      "16000",
+      "-ac",
+      "1",
     ],
   });
   transcoder.on("error", (e) => {
@@ -497,7 +536,8 @@ const ensureVoiceConnection = async (channel: VoiceBasedChannel) => {
   const connection = joinVoiceChannel({
     channelId: channel.id,
     guildId: channel.guild.id,
-    adapterCreator: channel.guild.voiceAdapterCreator as DiscordGatewayAdapterCreator,
+    adapterCreator: channel.guild
+      .voiceAdapterCreator as DiscordGatewayAdapterCreator,
     selfDeaf: false,
     selfMute: false,
   });
@@ -516,12 +556,18 @@ client.on("interactionCreate", async (interaction) => {
   // --- Autocomplete Handling ---
   if (interaction.isAutocomplete()) {
     const focusedOption = interaction.options.getFocused(true);
-    if (focusedOption.name === "target_keyword" || focusedOption.name === "keyword") {  // Covers /sound edit, /sound remove, and /play
+    if (
+      focusedOption.name === "target_keyword" ||
+      focusedOption.name === "keyword"
+    ) {
+      // Covers /sound edit, /sound remove, and /play
       const focusedValue = focusedOption.value.toLowerCase();
       // Collect all keywords from all mappings
       const allKeywords = appConfig.mappings.flatMap((m) => m.keywords);
       // Filter
-      const filtered = allKeywords.filter((kw) => kw.toLowerCase().includes(focusedValue));
+      const filtered = allKeywords.filter((kw) =>
+        kw.toLowerCase().includes(focusedValue)
+      );
       // Unique and limit to 25
       const unique = [...new Set(filtered)].slice(0, 25);
 
@@ -538,7 +584,12 @@ client.on("interactionCreate", async (interaction) => {
     const { commandName } = interaction;
 
     // Helper to create success/error embeds
-    const createEmbed = (title: string, description: string, color: number = 0x00FF00) => { // Green
+    const createEmbed = (
+      title: string,
+      description: string,
+      color: number = 0x00ff00
+    ) => {
+      // Green
       return new EmbedBuilder()
         .setTitle(title)
         .setDescription(description)
@@ -550,27 +601,42 @@ client.on("interactionCreate", async (interaction) => {
       return new EmbedBuilder()
         .setTitle("Error")
         .setDescription(description)
-        .setColor(0xFF0000); // Red
+        .setColor(0xff0000); // Red
     };
 
     if (commandName === "help") {
       const embed = new EmbedBuilder()
         .setTitle("🤖 Super Soundboard Help")
-        .setColor(0x0099FF)
+        .setColor(0x0099ff)
         .addFields(
-          { name: "/join", value: "ボイスチャンネルに参加して音声認識を開始します。" },
+          {
+            name: "/join",
+            value: "ボイスチャンネルに参加して音声認識を開始します。",
+          },
           { name: "/leave", value: "ボイスチャンネルから退出します。" },
-          { name: "/play <keyword>", value: "キーワードを指定して効果音を再生します。" },
-          { name: "/config", value: "config.json をファイルとして表示します。" },
+          {
+            name: "/play <keyword>",
+            value: "キーワードを指定して効果音を再生します。",
+          },
+          {
+            name: "/config",
+            value: "config.json をファイルとして表示します。",
+          },
           { name: "/sound list", value: "登録済みの効果音一覧を表示します。" },
-          { name: "/sound add <keyword> <file> [volume]", value: "新しい効果音を登録します。キーワードはカンマ区切りで複数指定可。" },
-          { name: "/sound edit <target> ...", value: "既存の効果音の設定を編集します。" },
-          { name: "/sound remove <keyword>", value: "効果音を削除します。" },
+          {
+            name: "/sound add <keyword> <file> [volume]",
+            value:
+              "新しい効果音を登録します。キーワードはカンマ区切りで複数指定可。",
+          },
+          {
+            name: "/sound edit <target> ...",
+            value: "既存の効果音の設定を編集します。",
+          },
+          { name: "/sound remove <keyword>", value: "効果音を削除します。" }
         )
         .setFooter({ text: "キーワードを話すと効果音が再生されます！" });
 
       await interaction.reply({ embeds: [embed] });
-
     } else if (commandName === "join") {
       // Defer as public
       await interaction.deferReply();
@@ -578,53 +644,73 @@ client.on("interactionCreate", async (interaction) => {
       if (member.voice.channel) {
         await ensureVoiceConnection(member.voice.channel);
         await interaction.editReply({
-          embeds: [createEmbed("Connected", `Listening in **${member.voice.channel.name}**!`, 0x0099FF)]
+          embeds: [
+            createEmbed(
+              "Connected",
+              `Listening in **${member.voice.channel.name}**!`,
+              0x0099ff
+            ),
+          ],
         });
       } else {
         await interaction.editReply({
-          embeds: [createErrorEmbed("You must be in a Voice Channel first.")]
+          embeds: [createErrorEmbed("You must be in a Voice Channel first.")],
         });
       }
-
     } else if (commandName === "leave") {
       voiceConnection?.destroy();
       voiceConnection = null;
       await interaction.reply({
-        embeds: [createEmbed("Disconnected", "Left the voice channel.", 0x0099FF)]
+        embeds: [
+          createEmbed("Disconnected", "Left the voice channel.", 0x0099ff),
+        ],
       });
-
     } else if (commandName === "play") {
       const keyword = interaction.options.getString("keyword", true);
-      const mapping = appConfig.mappings.find(m =>
-        m.keywords.some(kw => normalizeKeyword(kw) === normalizeKeyword(keyword))
+      const mapping = appConfig.mappings.find((m) =>
+        m.keywords.some(
+          (kw) => normalizeKeyword(kw) === normalizeKeyword(keyword)
+        )
       );
 
       if (mapping) {
-        const resolved = resolvedMappings.find(rm => rm.file === mapping.file);
+        const resolved = resolvedMappings.find(
+          (rm) => rm.file === mapping.file
+        );
         if (resolved) {
           enqueuePlayback(resolved.filePath, resolved.volume);
           await interaction.reply({
-            embeds: [createEmbed("▶️ Playing", `Playing sound for keyword "**${keyword}**"`, 0x0099FF)]
+            embeds: [
+              createEmbed(
+                "▶️ Playing",
+                `Playing sound for keyword "**${keyword}**"`,
+                0x0099ff
+              ),
+            ],
           });
         } else {
           await interaction.reply({
-            embeds: [createErrorEmbed(`Sound file not found for keyword "${keyword}".`)],
-            flags: MessageFlags.Ephemeral
+            embeds: [
+              createErrorEmbed(
+                `Sound file not found for keyword "${keyword}".`
+              ),
+            ],
+            flags: MessageFlags.Ephemeral,
           });
         }
       } else {
         await interaction.reply({
-          embeds: [createErrorEmbed(`No sound found with keyword "${keyword}".`)],
-          flags: MessageFlags.Ephemeral
+          embeds: [
+            createErrorEmbed(`No sound found with keyword "${keyword}".`),
+          ],
+          flags: MessageFlags.Ephemeral,
         });
       }
-
     } else if (commandName === "config") {
       await interaction.reply({
         content: "📄 Current config.json:",
-        files: [{ attachment: rootConfigPath, name: "config.json" }]
+        files: [{ attachment: rootConfigPath, name: "config.json" }],
       });
-
     } else if (commandName === "sound") {
       const sub = interaction.options.getSubcommand();
 
@@ -635,21 +721,30 @@ client.on("interactionCreate", async (interaction) => {
         const attachment = interaction.options.getAttachment("file", true);
         const volume = interaction.options.getInteger("volume") ?? 100;
 
-        const keywords = keywordInput.split(",").map((k) => k.trim()).filter((k) => k.length > 0);
+        const keywords = keywordInput
+          .split(",")
+          .map((k) => k.trim())
+          .filter((k) => k.length > 0);
 
         if (keywords.length === 0) {
-          await interaction.editReply({ embeds: [createErrorEmbed("Invalid keywords.")] });
+          await interaction.editReply({
+            embeds: [createErrorEmbed("Invalid keywords.")],
+          });
           return;
         }
 
         const validationError = validateKeywords(keywords);
         if (validationError) {
-          await interaction.editReply({ embeds: [createErrorEmbed(validationError)] });
+          await interaction.editReply({
+            embeds: [createErrorEmbed(validationError)],
+          });
           return;
         }
 
         if (!attachment.contentType?.startsWith("audio/")) {
-          await interaction.editReply({ embeds: [createErrorEmbed("File must be an audio type.")] });
+          await interaction.editReply({
+            embeds: [createErrorEmbed("File must be an audio type.")],
+          });
           return;
         }
 
@@ -658,37 +753,53 @@ client.on("interactionCreate", async (interaction) => {
         const savePath = path.join(soundsDir, fileName);
 
         try {
-          const response = await axios.get(attachment.url, { responseType: "arraybuffer" });
+          const response = await axios.get(attachment.url, {
+            responseType: "arraybuffer",
+          });
           fs.writeFileSync(savePath, response.data);
         } catch (e: any) {
-          await interaction.editReply({ embeds: [createErrorEmbed(`Failed to download file: ${e.message}`)] });
+          await interaction.editReply({
+            embeds: [createErrorEmbed(`Failed to download file: ${e.message}`)],
+          });
           return;
         }
 
         appConfig.mappings.push({
           keywords: keywords,
           file: fileName,
-          volume: volume
+          volume: volume,
         });
         saveConfig();
 
-        const embed = createEmbed("Sound Added", `New sound registered successfully!`)
-          .addFields(
-            { name: "Keywords", value: keywords.join(", "), inline: true },
-            { name: "File", value: fileName, inline: true },
-            { name: "Volume", value: `${volume}%`, inline: true }
-          );
+        const embed = createEmbed(
+          "Sound Added",
+          `New sound registered successfully!`
+        ).addFields(
+          { name: "Keywords", value: keywords.join(", "), inline: true },
+          { name: "File", value: fileName, inline: true },
+          { name: "Volume", value: `${volume}%`, inline: true }
+        );
 
         await interaction.editReply({ embeds: [embed] });
-
       } else if (sub === "edit") {
         await interaction.deferReply();
-        const targetKeyword = interaction.options.getString("target_keyword", true);
+        const targetKeyword = interaction.options.getString(
+          "target_keyword",
+          true
+        );
 
-        const mapping = appConfig.mappings.find(m => m.keywords.includes(targetKeyword));
+        const mapping = appConfig.mappings.find((m) =>
+          m.keywords.includes(targetKeyword)
+        );
 
         if (!mapping) {
-          await interaction.editReply({ embeds: [createErrorEmbed(`No sound found with keyword "${targetKeyword}".`)] });
+          await interaction.editReply({
+            embeds: [
+              createErrorEmbed(
+                `No sound found with keyword "${targetKeyword}".`
+              ),
+            ],
+          });
           return;
         }
 
@@ -699,9 +810,14 @@ client.on("interactionCreate", async (interaction) => {
         let changes = [];
 
         if (newKeywordsInput) {
-          const newKeywords = newKeywordsInput.split(",").map((k) => k.trim()).filter((k) => k.length > 0);
+          const newKeywords = newKeywordsInput
+            .split(",")
+            .map((k) => k.trim())
+            .filter((k) => k.length > 0);
           if (newKeywords.length === 0) {
-            await interaction.editReply({ embeds: [createErrorEmbed("Invalid new keywords.")] });
+            await interaction.editReply({
+              embeds: [createErrorEmbed("Invalid new keywords.")],
+            });
             return;
           }
 
@@ -722,7 +838,9 @@ client.on("interactionCreate", async (interaction) => {
 
         if (newFile) {
           if (!newFile.contentType?.startsWith("audio/")) {
-            await interaction.editReply({ embeds: [createErrorEmbed("New file must be an audio type.")] });
+            await interaction.editReply({
+              embeds: [createErrorEmbed("New file must be an audio type.")],
+            });
             return;
           }
 
@@ -730,51 +848,71 @@ client.on("interactionCreate", async (interaction) => {
           const savePath = path.join(soundsDir, fileName);
 
           try {
-            const response = await axios.get(newFile.url, { responseType: "arraybuffer" });
+            const response = await axios.get(newFile.url, {
+              responseType: "arraybuffer",
+            });
             fs.writeFileSync(savePath, response.data);
             mapping.file = fileName;
             changes.push(`**File**: ${fileName}`);
           } catch (e: any) {
-            await interaction.editReply({ embeds: [createErrorEmbed(`Failed to download file: ${e.message}`)] });
+            await interaction.editReply({
+              embeds: [
+                createErrorEmbed(`Failed to download file: ${e.message}`),
+              ],
+            });
             return;
           }
         }
 
         if (changes.length === 0) {
-          await interaction.editReply({ embeds: [createEmbed("No Changes", "No edits were specified.", 0xFFFF00)] }); // Yellow
+          await interaction.editReply({
+            embeds: [
+              createEmbed("No Changes", "No edits were specified.", 0xffff00),
+            ],
+          }); // Yellow
           return;
         }
 
         saveConfig();
         await interaction.editReply({
-          embeds: [createEmbed("Sound Updated", changes.join("\n"))]
+          embeds: [createEmbed("Sound Updated", changes.join("\n"))],
         });
-
       } else if (sub === "remove") {
         const keyword = interaction.options.getString("keyword", true);
         const initialCount = appConfig.mappings.length;
-        const newMappings = appConfig.mappings.filter(m => !m.keywords.includes(keyword));
+        const newMappings = appConfig.mappings.filter(
+          (m) => !m.keywords.includes(keyword)
+        );
 
         if (newMappings.length === initialCount) {
           await interaction.reply({
-            embeds: [createErrorEmbed(`No sound found with keyword "${keyword}".`)],
-            flags: MessageFlags.Ephemeral
+            embeds: [
+              createErrorEmbed(`No sound found with keyword "${keyword}".`),
+            ],
+            flags: MessageFlags.Ephemeral,
           });
         } else {
           appConfig.mappings = newMappings;
           saveConfig();
           await interaction.reply({
-            embeds: [createEmbed("Sound Removed", `Successfully removed sound for keyword "**${keyword}**".`)]
+            embeds: [
+              createEmbed(
+                "Sound Removed",
+                `Successfully removed sound for keyword "**${keyword}**".`
+              ),
+            ],
           });
         }
-
       } else if (sub === "list") {
         let description = "";
         if (appConfig.mappings.length === 0) {
-          description = "No sounds registered yet. Use `/sound add` to get started!";
+          description =
+            "No sounds registered yet. Use `/sound add` to get started!";
         } else {
           appConfig.mappings.forEach((m, i) => {
-            const line = `**${i + 1}.** ${m.keywords.map(k => `\`${k}\``).join(", ")} \n   └ 📁 ${m.file} 🔊 ${m.volume ?? 100}%\n`;
+            const line = `**${i + 1}.** ${m.keywords
+              .map((k) => `\`${k}\``)
+              .join(", ")} \n   └ 📁 ${m.file} 🔊 ${m.volume ?? 100}%\n`;
             if (description.length + line.length < 4000) {
               description += line;
             }
@@ -783,13 +921,12 @@ client.on("interactionCreate", async (interaction) => {
 
         const embed = new EmbedBuilder()
           .setTitle("📋 Registered Sounds")
-          .setColor(0x0099FF)
+          .setColor(0x0099ff)
           .setDescription(description.length > 0 ? description : "None.");
 
         await interaction.reply({ embeds: [embed] });
       }
     }
-
   } catch (error: any) {
     log("error", "Command error", { error: error.message });
     const content = `An error occurred: ${error.message}`;
@@ -809,7 +946,11 @@ client.on("interactionCreate", async (interaction) => {
 // --- Auto-Disconnect ---
 
 client.on("voiceStateUpdate", (oldState, newState) => {
-  if (!voiceConnection || voiceConnection.state.status === VoiceConnectionStatus.Destroyed) return;
+  if (
+    !voiceConnection ||
+    voiceConnection.state.status === VoiceConnectionStatus.Destroyed
+  )
+    return;
 
   const botChannelId = voiceConnection.joinConfig.channelId;
   if (!botChannelId) return;
@@ -820,7 +961,9 @@ client.on("voiceStateUpdate", (oldState, newState) => {
   // But checking on any update to our channel is safe.
   if (botChannelId === changedChannelId) {
     // Get the channel from cache
-    const channel = client.channels.cache.get(botChannelId) as VoiceBasedChannel;
+    const channel = client.channels.cache.get(
+      botChannelId
+    ) as VoiceBasedChannel;
     if (channel && channel.members.size === 1) {
       log("info", "Auto-disconnecting because channel is empty.");
       voiceConnection.destroy();
@@ -828,6 +971,10 @@ client.on("voiceStateUpdate", (oldState, newState) => {
     }
   }
 });
+
+// --- API Server ---
+
+const apiServer = createApiServer(appConfig, soundsDir, log);
 
 // --- Start ---
 
@@ -837,6 +984,10 @@ const bootstrap = async () => {
     await registerCommands();
     process.exit(0);
   }
+
+  // Start API server
+  apiServer.startServer();
+
   await registerCommands();
   await client.login(env.token);
   log("info", "Started.");
@@ -847,7 +998,10 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (error) => {
-  log("error", "Uncaught Exception", { error: error.message, stack: error.stack });
+  log("error", "Uncaught Exception", {
+    error: error.message,
+    stack: error.stack,
+  });
 });
 
 bootstrap();
