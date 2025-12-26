@@ -1,6 +1,8 @@
 import fs from "fs";
 import path from "path";
 import axios from "axios";
+import crypto from "crypto";
+import ffmpeg from "fluent-ffmpeg";
 import {
   AudioPlayer,
   AudioPlayerStatus,
@@ -95,6 +97,41 @@ let resolvedMappings: ResolvedMapping[] = [];
 const readJsonFile = <T>(filePath: string): T => {
   const raw = fs.readFileSync(filePath, "utf8");
   return JSON.parse(raw) as T;
+};
+
+// --- Audio Conversion Helpers ---
+
+const generateRandomFilename = (): string => {
+  return crypto.randomBytes(16).toString("hex") + ".wav";
+};
+
+const convertToWav48k = (
+  inputPath: string,
+  outputPath: string
+): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .audioFrequency(48000)
+      .audioChannels(2)
+      .format("wav")
+      .on("end", () => {
+        // Clean up temporary input file
+        if (fs.existsSync(inputPath)) {
+          fs.unlinkSync(inputPath);
+        }
+        resolve();
+      })
+      .on("error", (err: Error) => {
+        // Clean up temporary input file on error
+        if (fs.existsSync(inputPath)) {
+          fs.unlinkSync(inputPath);
+        }
+        reject(
+          new Error(`Failed to convert audio to WAV 48kHz: ${err.message}`)
+        );
+      })
+      .save(outputPath);
+  });
 };
 
 const writeJsonFile = (filePath: string, data: any) => {
@@ -748,25 +785,38 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const fileName = attachment.name;
-        // Simple overwrite policy as requested
-        const savePath = path.join(soundsDir, fileName);
+        const randomFileName = generateRandomFilename();
+        const tempPath = path.join(
+          soundsDir,
+          `temp_${Date.now()}_${attachment.name}`
+        );
+        const finalPath = path.join(soundsDir, randomFileName);
 
         try {
+          // Download the file
           const response = await axios.get(attachment.url, {
             responseType: "arraybuffer",
           });
-          fs.writeFileSync(savePath, response.data);
+          fs.writeFileSync(tempPath, response.data);
+
+          // Convert to WAV 48kHz
+          await convertToWav48k(tempPath, finalPath);
         } catch (e: any) {
+          // Clean up temporary file if it exists
+          if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath);
+          }
           await interaction.editReply({
-            embeds: [createErrorEmbed(`Failed to download file: ${e.message}`)],
+            embeds: [
+              createErrorEmbed(`Failed to process audio file: ${e.message}`),
+            ],
           });
           return;
         }
 
         appConfig.mappings.push({
           keywords: keywords,
-          file: fileName,
+          file: randomFileName,
           volume: volume,
         });
         saveConfig();
@@ -844,20 +894,39 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const fileName = newFile.name;
-          const savePath = path.join(soundsDir, fileName);
+          const randomFileName = generateRandomFilename();
+          const tempPath = path.join(
+            soundsDir,
+            `temp_${Date.now()}_${newFile.name}`
+          );
+          const finalPath = path.join(soundsDir, randomFileName);
 
           try {
+            // Download the file
             const response = await axios.get(newFile.url, {
               responseType: "arraybuffer",
             });
-            fs.writeFileSync(savePath, response.data);
-            mapping.file = fileName;
-            changes.push(`**File**: ${fileName}`);
+            fs.writeFileSync(tempPath, response.data);
+
+            // Convert to WAV 48kHz
+            await convertToWav48k(tempPath, finalPath);
+
+            // Delete old file if it exists
+            const oldFilePath = path.join(soundsDir, mapping.file);
+            if (fs.existsSync(oldFilePath)) {
+              fs.unlinkSync(oldFilePath);
+            }
+
+            mapping.file = randomFileName;
+            changes.push(`**File**: ${randomFileName}`);
           } catch (e: any) {
+            // Clean up temporary file if it exists
+            if (fs.existsSync(tempPath)) {
+              fs.unlinkSync(tempPath);
+            }
             await interaction.editReply({
               embeds: [
-                createErrorEmbed(`Failed to download file: ${e.message}`),
+                createErrorEmbed(`Failed to process audio file: ${e.message}`),
               ],
             });
             return;
