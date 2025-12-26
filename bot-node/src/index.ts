@@ -784,9 +784,12 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        if (!attachment.contentType?.startsWith("audio/")) {
+        const isAudioOrVideo =
+          attachment.contentType?.startsWith("audio/") ||
+          attachment.contentType?.startsWith("video/");
+        if (!isAudioOrVideo) {
           await interaction.editReply({
-            embeds: [createErrorEmbed("File must be an audio type.")],
+            embeds: [createErrorEmbed("File must be an audio or video file.")],
           });
           return;
         }
@@ -901,9 +904,14 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (newFile) {
-          if (!newFile.contentType?.startsWith("audio/")) {
+          const isAudioOrVideo =
+            newFile.contentType?.startsWith("audio/") ||
+            newFile.contentType?.startsWith("video/");
+          if (!isAudioOrVideo) {
             await interaction.editReply({
-              embeds: [createErrorEmbed("New file must be an audio type.")],
+              embeds: [
+                createErrorEmbed("New file must be an audio or video file."),
+              ],
             });
             return;
           }
