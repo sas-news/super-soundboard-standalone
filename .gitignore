@@ -10,3 +10,5 @@ pnpm-debug.log*
 
 bot-node/sounds/*
 !bot-node/sounds/.keep
+
+*.buckup
