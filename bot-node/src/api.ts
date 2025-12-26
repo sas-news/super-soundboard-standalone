@@ -143,11 +143,48 @@ export const createApiServer = (
   });
 
   // Start API server
+  let httpServer: import("http").Server | null = null;
+  let started = false;
+
   const startServer = () => {
-    app.listen(API_PORT, () => {
+    if (started && httpServer) {
+      log("info", `API server already running on port ${API_PORT}`);
+      return;
+    }
+    httpServer = app.listen(API_PORT, () => {
+      started = true;
       log("info", `API server started on port ${API_PORT}`);
+    });
+
+    httpServer.on("error", (err) => {
+      log("error", "API server error", { error: String(err) });
     });
   };
 
-  return { startServer };
+  const stopServer = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (!httpServer) {
+        resolve();
+        return;
+      }
+      httpServer.close((err?: Error) => {
+        if (err) {
+          log("error", "Failed to stop API server", { error: String(err) });
+          reject(err);
+          return;
+        }
+        log("info", "API server stopped");
+        httpServer = null;
+        started = false;
+        resolve();
+      });
+    });
+  };
+
+  const restartServer = async (): Promise<void> => {
+    await stopServer();
+    startServer();
+  };
+
+  return { startServer, stopServer, restartServer };
 };

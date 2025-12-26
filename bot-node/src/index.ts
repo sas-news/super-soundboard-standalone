@@ -826,6 +826,14 @@ client.on("interactionCreate", async (interaction) => {
           volume: volume,
         });
         saveConfig();
+        // Restart API to pick up the new mapping
+        try {
+          await apiServer.restartServer?.();
+        } catch (e: any) {
+          log("error", "Failed to restart API server after config change", {
+            error: e.message,
+          });
+        }
 
         const embed = createEmbed(
           "Sound Added",
@@ -949,6 +957,14 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         saveConfig();
+        // Restart API to pick up changes
+        try {
+          await apiServer.restartServer?.();
+        } catch (e: any) {
+          log("error", "Failed to restart API server after config change", {
+            error: e.message,
+          });
+        }
         await interaction.editReply({
           embeds: [createEmbed("Sound Updated", changes.join("\n"))],
         });
@@ -969,6 +985,14 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           appConfig.mappings = newMappings;
           saveConfig();
+          // Restart API to pick up removal
+          try {
+            await apiServer.restartServer?.();
+          } catch (e: any) {
+            log("error", "Failed to restart API server after config change", {
+              error: e.message,
+            });
+          }
           await interaction.reply({
             embeds: [
               createEmbed(
