@@ -236,11 +236,9 @@ const validateKeywords = (
       if (mapping === ignoreMapping) continue;
       for (const existingKw of mapping.keywords) {
         const eKw = normalizeKeyword(existingKw);
+        // Only check for exact duplicates
+        // Substring relationships are now allowed since we sort by keyword length
         if (nKw === eKw) return `Keyword "${newKw}" is already used.`;
-        if (nKw.includes(eKw))
-          return `Keyword "${newKw}" contains existing keyword "${existingKw}".`;
-        if (eKw.includes(nKw))
-          return `Existing keyword "${existingKw}" contains new keyword "${newKw}".`;
       }
     }
   }
