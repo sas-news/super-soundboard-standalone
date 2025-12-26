@@ -832,7 +832,7 @@ client.on("interactionCreate", async (interaction) => {
           `New sound registered successfully!`
         ).addFields(
           { name: "Keywords", value: keywords.join(", "), inline: true },
-          { name: "File", value: fileName, inline: true },
+          { name: "File", value: randomFileName, inline: true },
           { name: "Volume", value: `${volume}%`, inline: true }
         );
 
