@@ -148,6 +148,14 @@ const reloadConfig = () => {
     // Validate
     if (!parsed.mappings) parsed.mappings = [];
 
+    // Sort mappings by longest keyword (descending)
+    // This ensures longer keywords are matched first
+    parsed.mappings.sort((a, b) => {
+      const maxLenA = Math.max(...a.keywords.map((k) => k.length));
+      const maxLenB = Math.max(...b.keywords.map((k) => k.length));
+      return maxLenB - maxLenA; // Descending order (longer first)
+    });
+
     appConfig = parsed;
 
     // Resolve Mappings
