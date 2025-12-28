@@ -830,13 +830,7 @@ client.on("interactionCreate", async (interaction) => {
         });
         saveConfig();
         // Restart API to pick up the new mapping
-        try {
-          await apiServer.restartServer?.();
-        } catch (e: any) {
-          log("error", "Failed to restart API server after config change", {
-            error: e.message,
-          });
-        }
+        await restartApiServer();
 
         const embed = createEmbed(
           "Sound Added",
@@ -966,13 +960,7 @@ client.on("interactionCreate", async (interaction) => {
 
         saveConfig();
         // Restart API to pick up changes
-        try {
-          await apiServer.restartServer?.();
-        } catch (e: any) {
-          log("error", "Failed to restart API server after config change", {
-            error: e.message,
-          });
-        }
+        await restartApiServer();
         await interaction.editReply({
           embeds: [createEmbed("Sound Updated", changes.join("\n"))],
         });
@@ -994,13 +982,7 @@ client.on("interactionCreate", async (interaction) => {
           appConfig.mappings = newMappings;
           saveConfig();
           // Restart API to pick up removal
-          try {
-            await apiServer.restartServer?.();
-          } catch (e: any) {
-            log("error", "Failed to restart API server after config change", {
-              error: e.message,
-            });
-          }
+          await restartApiServer();
           await interaction.reply({
             embeds: [
               createEmbed(
@@ -1081,7 +1063,22 @@ client.on("voiceStateUpdate", (oldState, newState) => {
 
 // --- API Server ---
 
-const apiServer = createApiServer(appConfig, soundsDir, log);
+let apiServer = createApiServer(appConfig, soundsDir, log);
+
+const restartApiServer = async () => {
+  try {
+    log("info", "Restarting API server...");
+    if (apiServer.stopServer) {
+      await apiServer.stopServer();
+    }
+    // Create a new API server with the updated config
+    apiServer = createApiServer(appConfig, soundsDir, log);
+    apiServer.startServer();
+    log("info", "API server restarted successfully");
+  } catch (e: any) {
+    log("error", "Failed to restart API server", { error: e.message });
+  }
+};
 
 // --- Start ---
 

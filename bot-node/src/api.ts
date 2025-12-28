@@ -144,15 +144,9 @@ export const createApiServer = (
 
   // Start API server
   let httpServer: import("http").Server | null = null;
-  let started = false;
 
   const startServer = () => {
-    if (started && httpServer) {
-      log("info", `API server already running on port ${API_PORT}`);
-      return;
-    }
     httpServer = app.listen(API_PORT, () => {
-      started = true;
       log("info", `API server started on port ${API_PORT}`);
     });
 
@@ -175,16 +169,10 @@ export const createApiServer = (
         }
         log("info", "API server stopped");
         httpServer = null;
-        started = false;
         resolve();
       });
     });
   };
 
-  const restartServer = async (): Promise<void> => {
-    await stopServer();
-    startServer();
-  };
-
-  return { startServer, stopServer, restartServer };
+  return { startServer, stopServer };
 };
