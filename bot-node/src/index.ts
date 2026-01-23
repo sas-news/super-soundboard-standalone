@@ -3,6 +3,7 @@ import path from "path";
 import axios from "axios";
 import crypto from "crypto";
 import ffmpeg from "fluent-ffmpeg";
+import { Whisper } from "whisper-node";
 import {
   AudioPlayer,
   AudioPlayerStatus,
@@ -56,7 +57,8 @@ type EnvConfig = {
   token: string;
   appId: string;
   guildId?: string;
-  googleApiKey?: string;
+  whisperModel?: string;
+  whisperModelPath?: string;
 };
 
 type ResolvedMapping = SoundMapping & {
@@ -69,7 +71,7 @@ type ResolvedMapping = SoundMapping & {
 const log = (
   level: "info" | "warn" | "error",
   message: string,
-  meta?: Record<string, unknown>
+  meta?: Record<string, unknown>,
 ) => {
   const timestamp = new Date().toISOString();
   const suffix = meta ? ` ${JSON.stringify(meta)}` : "";
@@ -107,7 +109,7 @@ const generateRandomFilename = (): string => {
 
 const convertToWav48k = (
   inputPath: string,
-  outputPath: string
+  outputPath: string,
 ): Promise<void> => {
   return new Promise((resolve, reject) => {
     ffmpeg(inputPath)
@@ -127,7 +129,7 @@ const convertToWav48k = (
           fs.unlinkSync(inputPath);
         }
         reject(
-          new Error(`Failed to convert audio to WAV 48kHz: ${err.message}`)
+          new Error(`Failed to convert audio to WAV 48kHz: ${err.message}`),
         );
       })
       .save(outputPath);
@@ -213,7 +215,8 @@ const resolveEnv = (): EnvConfig => {
     token: read("DISCORD_TOKEN"),
     appId: read("DISCORD_APP_ID"),
     guildId: process.env["GUILD_ID"],
-    googleApiKey: process.env["GOOGLE_API_KEY"],
+    whisperModel: process.env["WHISPER_MODEL"],
+    whisperModelPath: process.env["WHISPER_MODEL_PATH"],
   };
 };
 
@@ -228,7 +231,7 @@ const normalizeKeyword = (keyword: string) => keyword.toLowerCase();
 
 const validateKeywords = (
   newKeywords: string[],
-  ignoreMapping?: SoundMapping
+  ignoreMapping?: SoundMapping,
 ): string | null => {
   for (const newKw of newKeywords) {
     const nKw = normalizeKeyword(newKw);
@@ -250,73 +253,139 @@ const getMappingForText = (text: string): ResolvedMapping | null => {
   const normalized = normalizeKeyword(text);
   // Find mapping where ANY of its keywords are contained in the text
   const mapping = resolvedMappings.find((m) =>
-    m.keywords.some((kw) => normalized.includes(normalizeKeyword(kw)))
+    m.keywords.some((kw) => normalized.includes(normalizeKeyword(kw))),
   );
   return mapping ?? null;
 };
 
-// --- Google Speech API ---
+// --- Whisper.cpp Speech Recognition (whisper-node) ---
 
-// --- Google Speech API (Streaming) ---
+// Global whisper instance (initialized once)
+let whisperInstance: Whisper | null = null;
 
-async function resolveSpeechStreamWithGoogle(
-  audioStream: Readable,
-  lang: string = "ja-JP",
-  onResult: (text: string) => void
-) {
-  // Use user-provided key if available, otherwise fallback to the hardcoded chromium key
-  const key = env.googleApiKey || "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw";
-  const profanityFilter = "1";
-  // The v2 API supports full duplex streaming if we pipe properly,
-  // but here we just stream the upload and read the response stream.
-  const url = `https://www.google.com/speech-api/v2/recognize?output=json&lang=${lang}&key=${key}&pFilter=${profanityFilter}`;
+// Convert language codes from ja-JP format to ja format for Whisper
+function convertLangCodeForWhisper(lang: string): string {
+  if (lang.includes("-")) {
+    return lang.split("-")[0];
+  }
+  return lang;
+}
+
+// Initialize whisper once at startup
+async function initializeWhisper() {
+  if (whisperInstance) return whisperInstance;
+
+  const modelName = env.whisperModel || "base";
+  const modelPath = env.whisperModelPath;
 
   try {
-    const response = await axios.post(url, audioStream, {
-      headers: {
-        "Content-Type": "audio/l16; rate=16000;",
+    log("info", "Initializing whisper-node...", { model: modelName });
+
+    const options: any = {
+      modelName: modelName,
+      whisperOptions: {
+        language: "auto", // Will be overridden per-transcription
+        gen_file_txt: false,
+        gen_file_subtitle: false,
+        gen_file_vtt: false,
+        word_timestamps: false,
       },
-      responseType: "stream",
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-    });
+    };
 
-    const stream = response.data as Readable;
-    let buffer = "";
-
-    stream.on("data", (chunk: Buffer | string) => {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const json = JSON.parse(line);
-          // Check for result
-          if (json.result && json.result.length > 0) {
-            const res = json.result[0];
-            if (res.alternative && res.alternative.length > 0) {
-              const transcript = res.alternative[0].transcript;
-              if (transcript) {
-                onResult(transcript);
-              }
-            }
-          }
-        } catch (e) {
-          // ignore parsing/json errors
-        }
-      }
-    });
-
-    return new Promise<void>((resolve) => {
-      stream.on("end", () => resolve());
-      stream.on("error", () => resolve());
-    });
-  } catch (e: any) {
-    if (e.message !== "socket hang up" && e.code !== "ECONNRESET") {
-      log("error", "Google Speech API error", { msg: e.message });
+    if (modelPath) {
+      options.modelPath = modelPath;
     }
+
+    whisperInstance = new Whisper(options);
+    log("info", "Whisper initialized successfully");
+    return whisperInstance;
+  } catch (e: any) {
+    log("error", "Failed to initialize Whisper", { msg: e.message });
+    throw e;
+  }
+}
+
+async function resolveSpeechStreamWithWhisper(
+  audioStream: Readable,
+  lang: string = "ja",
+  onResult: (text: string) => void,
+) {
+  try {
+    // Ensure whisper is initialized
+    const whisper = await initializeWhisper();
+
+    // Collect audio stream into a temporary file
+    const tempDir = path.resolve(__dirname, "..", "temp");
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const tempFileName = `audio_${Date.now()}_${Math.random().toString(36).substring(7)}.wav`;
+    const tempFilePath = path.join(tempDir, tempFileName);
+
+    // Collect all audio data
+    const chunks: Buffer[] = [];
+    audioStream.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+
+    await new Promise<void>((resolve) => {
+      audioStream.on("end", () => resolve());
+    });
+
+    const audioBuffer = Buffer.concat(chunks);
+
+    // Write WAV header + PCM data
+    const sampleRate = 16000;
+    const bitsPerSample = 16;
+    const channels = 1;
+    const byteRate = (sampleRate * channels * bitsPerSample) / 8;
+    const blockAlign = (channels * bitsPerSample) / 8;
+    const dataSize = audioBuffer.length;
+
+    const wavHeader = Buffer.alloc(44);
+    wavHeader.write("RIFF", 0);
+    wavHeader.writeUInt32LE(36 + dataSize, 4);
+    wavHeader.write("WAVE", 8);
+    wavHeader.write("fmt ", 12);
+    wavHeader.writeUInt32LE(16, 16);
+    wavHeader.writeUInt16LE(1, 20);
+    wavHeader.writeUInt16LE(channels, 22);
+    wavHeader.writeUInt32LE(sampleRate, 24);
+    wavHeader.writeUInt32LE(byteRate, 28);
+    wavHeader.writeUInt16LE(blockAlign, 32);
+    wavHeader.writeUInt16LE(bitsPerSample, 34);
+    wavHeader.write("data", 36);
+    wavHeader.writeUInt32LE(dataSize, 40);
+
+    fs.writeFileSync(tempFilePath, Buffer.concat([wavHeader, audioBuffer]));
+
+    // Transcribe
+    const language = convertLangCodeForWhisper(lang);
+    const transcript = await whisper.transcribe(tempFilePath, {
+      language: language,
+    });
+
+    // Clean up temp file
+    try {
+      fs.unlinkSync(tempFilePath);
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+
+    // Process result
+    if (transcript && transcript.length > 0) {
+      const fullText = transcript
+        .map((segment: any) => segment.speech?.trim() || "")
+        .filter((text: string) => text.length > 0)
+        .join(" ");
+
+      if (fullText) {
+        onResult(fullText);
+      }
+    }
+  } catch (e: any) {
+    log("error", "Whisper transcription error", { msg: e.message });
   }
 }
 
@@ -363,7 +432,7 @@ const commands = [
         .setName("keyword")
         .setDescription("再生する効果音のキーワード")
         .setRequired(true)
-        .setAutocomplete(true)
+        .setAutocomplete(true),
     ),
   new SlashCommandBuilder()
     .setName("config")
@@ -380,21 +449,21 @@ const commands = [
           opt
             .setName("keyword")
             .setDescription("キーワード（カンマ区切りで複数可）")
-            .setRequired(true)
+            .setRequired(true),
         )
         .addAttachmentOption((opt) =>
           opt
             .setName("file")
             .setDescription("音声ファイル（mp3/wav）")
-            .setRequired(true)
+            .setRequired(true),
         )
         .addIntegerOption((opt) =>
           opt
             .setName("volume")
             .setDescription("音量（0-200%、デフォルト100）")
             .setMinValue(0)
-            .setMaxValue(200)
-        )
+            .setMaxValue(200),
+        ),
     )
     .addSubcommand((sub) =>
       sub
@@ -405,8 +474,8 @@ const commands = [
             .setName("keyword")
             .setDescription("削除する効果音のキーワード")
             .setRequired(true)
-            .setAutocomplete(true)
-        )
+            .setAutocomplete(true),
+        ),
     )
     .addSubcommand((sub) =>
       sub
@@ -417,26 +486,26 @@ const commands = [
             .setName("target_keyword")
             .setDescription("編集対象のキーワード")
             .setRequired(true)
-            .setAutocomplete(true)
+            .setAutocomplete(true),
         )
         .addStringOption((opt) =>
           opt
             .setName("new_keywords")
-            .setDescription("新しいキーワード（カンマ区切りで複数可）")
+            .setDescription("新しいキーワード（カンマ区切りで複数可）"),
         )
         .addAttachmentOption((opt) =>
-          opt.setName("new_file").setDescription("新しい音声ファイル")
+          opt.setName("new_file").setDescription("新しい音声ファイル"),
         )
         .addIntegerOption((opt) =>
           opt
             .setName("new_volume")
             .setDescription("新しい音量（0-200%）")
             .setMinValue(0)
-            .setMaxValue(200)
-        )
+            .setMaxValue(200),
+        ),
     )
     .addSubcommand((sub) =>
-      sub.setName("list").setDescription("登録済みの効果音一覧")
+      sub.setName("list").setDescription("登録済みの効果音一覧"),
     ),
 ].map((command) => command.toJSON());
 
@@ -531,8 +600,9 @@ const handleUserSpeaking = (userId: string, connection: VoiceConnection) => {
 
   const stream = opusStream.pipe(decoder).pipe(transcoder);
 
-  // Stream directly to Google
-  resolveSpeechStreamWithGoogle(stream, appConfig.lang || "ja-JP", (text) => {
+  // Stream directly to Faster-Whisper
+  const whisperLang = convertLangCodeForWhisper(appConfig.lang || "ja");
+  resolveSpeechStreamWithWhisper(stream, whisperLang, (text) => {
     log("info", "Recognized", { text, userId });
 
     const now = Date.now();
@@ -609,13 +679,13 @@ client.on("interactionCreate", async (interaction) => {
       const allKeywords = appConfig.mappings.flatMap((m) => m.keywords);
       // Filter
       const filtered = allKeywords.filter((kw) =>
-        kw.toLowerCase().includes(focusedValue)
+        kw.toLowerCase().includes(focusedValue),
       );
       // Unique and limit to 25
       const unique = [...new Set(filtered)].slice(0, 25);
 
       await interaction.respond(
-        unique.map((choice) => ({ name: choice, value: choice }))
+        unique.map((choice) => ({ name: choice, value: choice })),
       );
     }
     return;
@@ -630,7 +700,7 @@ client.on("interactionCreate", async (interaction) => {
     const createEmbed = (
       title: string,
       description: string,
-      color: number = 0x00ff00
+      color: number = 0x00ff00,
     ) => {
       // Green
       return new EmbedBuilder()
@@ -675,7 +745,7 @@ client.on("interactionCreate", async (interaction) => {
             name: "/sound edit <target> ...",
             value: "既存の効果音の設定を編集します。",
           },
-          { name: "/sound remove <keyword>", value: "効果音を削除します。" }
+          { name: "/sound remove <keyword>", value: "効果音を削除します。" },
         )
         .setFooter({ text: "キーワードを話すと効果音が再生されます！" });
 
@@ -691,7 +761,7 @@ client.on("interactionCreate", async (interaction) => {
             createEmbed(
               "Connected",
               `Listening in **${member.voice.channel.name}**!`,
-              0x0099ff
+              0x0099ff,
             ),
           ],
         });
@@ -712,13 +782,13 @@ client.on("interactionCreate", async (interaction) => {
       const keyword = interaction.options.getString("keyword", true);
       const mapping = appConfig.mappings.find((m) =>
         m.keywords.some(
-          (kw) => normalizeKeyword(kw) === normalizeKeyword(keyword)
-        )
+          (kw) => normalizeKeyword(kw) === normalizeKeyword(keyword),
+        ),
       );
 
       if (mapping) {
         const resolved = resolvedMappings.find(
-          (rm) => rm.file === mapping.file
+          (rm) => rm.file === mapping.file,
         );
         if (resolved) {
           enqueuePlayback(resolved.filePath, resolved.volume);
@@ -727,7 +797,7 @@ client.on("interactionCreate", async (interaction) => {
               createEmbed(
                 "▶️ Playing",
                 `Playing sound for keyword "**${keyword}**"`,
-                0x0099ff
+                0x0099ff,
               ),
             ],
           });
@@ -735,7 +805,7 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.reply({
             embeds: [
               createErrorEmbed(
-                `Sound file not found for keyword "${keyword}".`
+                `Sound file not found for keyword "${keyword}".`,
               ),
             ],
             flags: MessageFlags.Ephemeral,
@@ -797,7 +867,7 @@ client.on("interactionCreate", async (interaction) => {
         const randomFileName = generateRandomFilename();
         const tempPath = path.join(
           soundsDir,
-          `temp_${Date.now()}_${attachment.name}`
+          `temp_${Date.now()}_${attachment.name}`,
         );
         const finalPath = path.join(soundsDir, randomFileName);
 
@@ -834,11 +904,11 @@ client.on("interactionCreate", async (interaction) => {
 
         const embed = createEmbed(
           "Sound Added",
-          `New sound registered successfully!`
+          `New sound registered successfully!`,
         ).addFields(
           { name: "Keywords", value: keywords.join(", "), inline: true },
           { name: "File", value: randomFileName, inline: true },
-          { name: "Volume", value: `${volume}%`, inline: true }
+          { name: "Volume", value: `${volume}%`, inline: true },
         );
 
         await interaction.editReply({ embeds: [embed] });
@@ -846,18 +916,18 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.deferReply();
         const targetKeyword = interaction.options.getString(
           "target_keyword",
-          true
+          true,
         );
 
         const mapping = appConfig.mappings.find((m) =>
-          m.keywords.includes(targetKeyword)
+          m.keywords.includes(targetKeyword),
         );
 
         if (!mapping) {
           await interaction.editReply({
             embeds: [
               createErrorEmbed(
-                `No sound found with keyword "${targetKeyword}".`
+                `No sound found with keyword "${targetKeyword}".`,
               ),
             ],
           });
@@ -913,7 +983,7 @@ client.on("interactionCreate", async (interaction) => {
           const randomFileName = generateRandomFilename();
           const tempPath = path.join(
             soundsDir,
-            `temp_${Date.now()}_${newFile.name}`
+            `temp_${Date.now()}_${newFile.name}`,
           );
           const finalPath = path.join(soundsDir, randomFileName);
 
@@ -968,7 +1038,7 @@ client.on("interactionCreate", async (interaction) => {
         const keyword = interaction.options.getString("keyword", true);
         const initialCount = appConfig.mappings.length;
         const newMappings = appConfig.mappings.filter(
-          (m) => !m.keywords.includes(keyword)
+          (m) => !m.keywords.includes(keyword),
         );
 
         if (newMappings.length === initialCount) {
@@ -987,7 +1057,7 @@ client.on("interactionCreate", async (interaction) => {
             embeds: [
               createEmbed(
                 "Sound Removed",
-                `Successfully removed sound for keyword "**${keyword}**".`
+                `Successfully removed sound for keyword "**${keyword}**".`,
               ),
             ],
           });
@@ -1051,7 +1121,7 @@ client.on("voiceStateUpdate", (oldState, newState) => {
   if (botChannelId === changedChannelId) {
     // Get the channel from cache
     const channel = client.channels.cache.get(
-      botChannelId
+      botChannelId,
     ) as VoiceBasedChannel;
     if (channel && channel.members.size === 1) {
       log("info", "Auto-disconnecting because channel is empty.");

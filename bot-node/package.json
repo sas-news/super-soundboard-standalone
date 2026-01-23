@@ -21,6 +21,7 @@
     "fluent-ffmpeg": "^2.1.3",
     "libsodium-wrappers": "^0.7.13",
     "opusscript": "^0.0.8",
+    "whisper-node": "^1.1.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
