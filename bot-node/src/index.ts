@@ -3,7 +3,7 @@ import path from "path";
 import axios from "axios";
 import crypto from "crypto";
 import ffmpeg from "fluent-ffmpeg";
-import { Whisper } from "whisper-node";
+import whisperNode from "whisper-node";
 import {
   AudioPlayer,
   AudioPlayerStatus,
@@ -261,7 +261,7 @@ const getMappingForText = (text: string): ResolvedMapping | null => {
 // --- Whisper.cpp Speech Recognition (whisper-node) ---
 
 // Global whisper instance (initialized once)
-let whisperInstance: Whisper | null = null;
+let whisperInstance: any = null;
 
 // Convert language codes from ja-JP format to ja format for Whisper
 function convertLangCodeForWhisper(lang: string): string {
@@ -296,7 +296,7 @@ async function initializeWhisper() {
       options.modelPath = modelPath;
     }
 
-    whisperInstance = new Whisper(options);
+    whisperInstance = new whisperNode(options);
     log("info", "Whisper initialized successfully");
     return whisperInstance;
   } catch (e: any) {
