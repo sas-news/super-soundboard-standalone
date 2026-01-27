@@ -589,11 +589,36 @@ const startPlaybackIfIdle = () => {
 
 audioPlayer.on(AudioPlayerStatus.Idle, startPlaybackIfIdle);
 
+// Log audio player state changes and errors for debugging playback issues
+audioPlayer.on("error", (err) => {
+  log("error", "Audio player error", { msg: err?.message || String(err) });
+});
+
+audioPlayer.on(AudioPlayerStatus.Playing, () => {
+  log("info", "Audio player state", { status: "PLAYING" });
+});
+
+audioPlayer.on(AudioPlayerStatus.Paused, () => {
+  log("info", "Audio player state", { status: "PAUSED" });
+});
+
+audioPlayer.on(AudioPlayerStatus.AutoPaused, () => {
+  log("info", "Audio player state", { status: "AUTOPAUSED" });
+});
+
 const enqueuePlayback = (filePath: string, volume: number) => {
   if (!fs.existsSync(filePath)) {
     log("warn", "File not found", { filePath });
     return;
   }
+
+  if (!voiceConnection) {
+    log("warn", "Enqueueing audio while not connected to a voice channel", {
+      filePath,
+    });
+  }
+
+  log("info", "Enqueueing playback", { filePath, volume });
   playbackQueue.push({ filePath, volume });
   startPlaybackIfIdle();
 };
