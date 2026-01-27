@@ -298,6 +298,7 @@ async function initializeWhisper() {
 
     // whisper-node exports a function: whisper(filePath, options)
     // Provide a small wrapper with a `transcribe` method to match existing code expectations
+    // Add defensive handling: return an empty array on errors or unexpected outputs
     whisperInstance = {
       transcribe: async (filePath: string, opts: any = {}) => {
         const mergedOptions = {
@@ -308,7 +309,27 @@ async function initializeWhisper() {
             ...(opts.whisperOptions || {}),
           },
         };
-        return await whisperNode(filePath, mergedOptions);
+
+        try {
+          const result = await whisperNode(filePath, mergedOptions);
+
+          // If the module returned undefined/null or not an array, normalize to []
+          if (!result || !Array.isArray(result)) {
+            log(
+              "warn",
+              "Whisper returned unexpected result; normalizing to empty array",
+              { type: typeof result },
+            );
+            return [];
+          }
+
+          return result;
+        } catch (err: any) {
+          log("error", "Whisper transcribe failed", {
+            msg: err?.message || String(err),
+          });
+          return [];
+        }
       },
     };
 
