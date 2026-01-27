@@ -281,7 +281,7 @@ async function initializeWhisper() {
   try {
     log("info", "Initializing whisper-node...", { model: modelName });
 
-    const options: any = {
+    const defaultOptions: any = {
       modelName: modelName,
       whisperOptions: {
         language: "auto", // Will be overridden per-transcription
@@ -293,10 +293,25 @@ async function initializeWhisper() {
     };
 
     if (modelPath) {
-      options.modelPath = modelPath;
+      defaultOptions.modelPath = modelPath;
     }
 
-    whisperInstance = new whisperNode(options);
+    // whisper-node exports a function: whisper(filePath, options)
+    // Provide a small wrapper with a `transcribe` method to match existing code expectations
+    whisperInstance = {
+      transcribe: async (filePath: string, opts: any = {}) => {
+        const mergedOptions = {
+          ...defaultOptions,
+          ...opts,
+          whisperOptions: {
+            ...(defaultOptions.whisperOptions || {}),
+            ...(opts.whisperOptions || {}),
+          },
+        };
+        return await whisperNode(filePath, mergedOptions);
+      },
+    };
+
     log("info", "Whisper initialized successfully");
     return whisperInstance;
   } catch (e: any) {
