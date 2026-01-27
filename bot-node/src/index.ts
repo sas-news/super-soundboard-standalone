@@ -287,7 +287,7 @@ async function initializeWhisper() {
         language: "auto", // Will be overridden per-transcription
         gen_file_txt: false,
         gen_file_subtitle: false,
-        gen_file_vtt: false,
+        gen_file_vtt: true, // request VTT output so parsing works
         word_timestamps: false,
       },
     };
@@ -378,7 +378,7 @@ async function resolveSpeechStreamWithWhisper(
     // Transcribe
     const language = convertLangCodeForWhisper(lang);
     const transcript = await whisper.transcribe(tempFilePath, {
-      language: language,
+      whisperOptions: { language },
     });
 
     // Clean up temp file
@@ -386,6 +386,12 @@ async function resolveSpeechStreamWithWhisper(
       fs.unlinkSync(tempFilePath);
     } catch (e) {
       // Ignore cleanup errors
+    }
+
+    // Defensive: ensure we got an array back
+    if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
+      log("warn", "Whisper returned no transcription segments");
+      return;
     }
 
     // Process result
