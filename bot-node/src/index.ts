@@ -398,8 +398,12 @@ async function resolveSpeechStreamWithWhisper(
 
     // Transcribe
     const language = convertLangCodeForWhisper(lang);
+    // Allow enabling verbose whisper output by setting WHISPER_DEBUG=1 in env
+    const shellOptions = { silent: process.env.WHISPER_DEBUG ? false : true };
+
     const transcript = await whisper.transcribe(tempFilePath, {
       whisperOptions: { language },
+      shellOptions,
     });
 
     // Clean up temp file
@@ -412,6 +416,10 @@ async function resolveSpeechStreamWithWhisper(
     // Defensive: ensure we got an array back
     if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
       log("warn", "Whisper returned no transcription segments");
+      log(
+        "info",
+        "If this persists, ensure a whisper model is installed (run 'npx whisper-node download' in bot-node) and set WHISPER_DEBUG=1 to view raw whisper output for debugging.",
+      );
       return;
     }
 
