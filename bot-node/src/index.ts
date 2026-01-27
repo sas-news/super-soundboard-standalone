@@ -227,7 +227,19 @@ reloadConfig();
 
 // --- Helpers ---
 
-const normalizeKeyword = (keyword: string) => keyword.toLowerCase();
+const normalizeKeyword = (keyword: string) => {
+  // Normalize unicode (NFKC), lowercase, remove punctuation and whitespace for robust matching across languages
+  try {
+    const s = keyword.normalize("NFKC").toLowerCase();
+    // Remove whitespace and any characters that are not letters or numbers (keep Japanese letters)
+    return s.replace(/\s+/g, "").replace(/[^
+      \p{L}\p{N}]+/gu, "");
+  } catch (e) {
+    // Fallback for environments without Unicode property escapes
+    const s = keyword.normalize("NFKC").toLowerCase();
+    return s.replace(/\s+/g, "").replace(/[^0-9a-zA-Z\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+/g, "");
+  }
+};
 
 const validateKeywords = (
   newKeywords: string[],
@@ -313,14 +325,45 @@ async function initializeWhisper() {
         try {
           const result = await whisperNode(filePath, mergedOptions);
 
-          // If the module returned undefined/null or not an array, normalize to []
+          // If the module returned undefined/null or not an array, attempt VTT fallback
           if (!result || !Array.isArray(result)) {
             log(
               "warn",
-              "Whisper returned unexpected result; normalizing to empty array",
+              "Whisper returned unexpected result; attempting VTT fallback",
               { type: typeof result },
             );
-            return [];
+
+            try {
+              const vttPath = `${filePath}.vtt`;
+              if (fs.existsSync(vttPath)) {
+                const vtt = fs.readFileSync(vttPath, "utf8");
+
+                // Parse lines like: [00:00:00.000 --> 00:00:02.680]  speech text
+                const lines: string[] | null = vtt.match(/\[[0-9:.]+\s-->\s[0-9:.]+\].*/g);
+                if (!lines || lines.length === 0) {
+                  log("warn", "VTT file found but contains no timestamp lines", { vttPath });
+                  return [];
+                }
+
+                const parsed = lines.map((line) => {
+                  let [timestamp, speech] = line.split(/\]\s+/);
+                  if (!speech) speech = "";
+                  timestamp = timestamp.substring(1);
+                  const [start, end] = timestamp.split(" --> ");
+                  speech = (speech || "").replace(/\n/g, "").trim();
+                  return { start, end, speech } as any;
+                });
+
+                log("info", "Parsed VTT fallback", { vttPath, segments: parsed.length });
+                return parsed;
+              }
+
+              log("warn", "VTT fallback not available", { vttPath: `${filePath}.vtt` });
+              return [];
+            } catch (vttErr: any) {
+              log("error", "VTT fallback parse failed", { msg: vttErr?.message || String(vttErr) });
+              return [];
+            }
           }
 
           return result;
@@ -699,6 +742,8 @@ const handleUserSpeaking = (userId: string, connection: VoiceConnection) => {
         currText: text,
       });
       enqueuePlayback(mapping.filePath, mapping.volume);
+    } else {
+      log("info", "No mapping matched recognized text", { text, normalized: normalizeKeyword(text) });
     }
   });
 
