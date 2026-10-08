@@ -713,6 +713,19 @@ client.on("interactionCreate", async (interaction) => {
       });
     } else if (commandName === "play") {
       const keyword = interaction.options.getString("keyword", true);
+
+      if (!voiceConnection) {
+        await interaction.reply({
+          embeds: [
+            createErrorEmbed(
+              "Bot is not in a voice channel. Use `/join` first."
+            ),
+          ],
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
       const mapping = appConfig.mappings.find((m) =>
         m.keywords.some(
           (kw) => normalizeKeyword(kw) === normalizeKeyword(keyword)
@@ -800,7 +813,7 @@ client.on("interactionCreate", async (interaction) => {
         const randomFileName = generateRandomFilename();
         const tempPath = path.join(
           soundsDir,
-          `temp_${Date.now()}_${attachment.name}`
+          `temp_${Date.now()}_${path.basename(attachment.name)}`
         );
         const finalPath = path.join(soundsDir, randomFileName);
 
@@ -914,7 +927,7 @@ client.on("interactionCreate", async (interaction) => {
           const randomFileName = generateRandomFilename();
           const tempPath = path.join(
             soundsDir,
-            `temp_${Date.now()}_${newFile.name}`
+            `temp_${Date.now()}_${path.basename(newFile.name)}`
           );
           const finalPath = path.join(soundsDir, randomFileName);
 
@@ -965,12 +978,14 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (sub === "remove") {
         const keyword = interaction.options.getString("keyword", true);
-        const initialCount = appConfig.mappings.length;
+        const removedMappings = appConfig.mappings.filter((m) =>
+          m.keywords.includes(keyword)
+        );
         const newMappings = appConfig.mappings.filter(
           (m) => !m.keywords.includes(keyword)
         );
 
-        if (newMappings.length === initialCount) {
+        if (newMappings.length === appConfig.mappings.length) {
           await interaction.reply({
             embeds: [
               createErrorEmbed(`No sound found with keyword "${keyword}".`),
@@ -980,6 +995,26 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           appConfig.mappings = newMappings;
           saveConfig();
+
+          // Delete the removed sounds' audio files (best effort).
+          // Only files inside soundsDir are touched.
+          for (const removed of removedMappings) {
+            const filePath = path.resolve(soundsDir, removed.file);
+            if (
+              filePath.startsWith(soundsDir + path.sep) &&
+              fs.existsSync(filePath)
+            ) {
+              try {
+                fs.unlinkSync(filePath);
+              } catch (e: any) {
+                log("warn", "Failed to delete sound file", {
+                  file: removed.file,
+                  error: e.message,
+                });
+              }
+            }
+          }
+
           await interaction.reply({
             embeds: [
               createEmbed(
