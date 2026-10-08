@@ -27,7 +27,7 @@ type LogFunction = (
 // --- API Server Setup ---
 
 export const createApiServer = (
-  appConfig: AppConfig,
+  getConfig: () => AppConfig,
   soundsDir: string,
   log: LogFunction
 ) => {
@@ -42,6 +42,7 @@ export const createApiServer = (
   // GET /api/config - Returns the current configuration
   app.get("/api/config", (req, res) => {
     try {
+      const appConfig = getConfig();
       res.json({
         success: true,
         data: {

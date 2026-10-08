@@ -32,7 +32,6 @@ import {
   AutocompleteInteraction,
 } from "discord.js";
 import dotenv from "dotenv";
-import { OpusEncoder } from "@discordjs/opus";
 import prism from "prism-media";
 import { Readable } from "stream";
 import { createApiServer } from "./api";
@@ -89,7 +88,11 @@ if (!fs.existsSync(soundsDir)) {
   fs.mkdirSync(soundsDir, { recursive: true });
 }
 
-let appConfig: AppConfig;
+let appConfig: AppConfig = {
+  mappings: [],
+  cooldownMs: 3000,
+  lang: "ja-JP",
+};
 let resolvedMappings: ResolvedMapping[] = [];
 
 // --- Config Management ---
@@ -829,8 +832,6 @@ client.on("interactionCreate", async (interaction) => {
           volume: volume,
         });
         saveConfig();
-        // Restart API to pick up the new mapping
-        await restartApiServer();
 
         const embed = createEmbed(
           "Sound Added",
@@ -959,8 +960,6 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         saveConfig();
-        // Restart API to pick up changes
-        await restartApiServer();
         await interaction.editReply({
           embeds: [createEmbed("Sound Updated", changes.join("\n"))],
         });
@@ -981,8 +980,6 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           appConfig.mappings = newMappings;
           saveConfig();
-          // Restart API to pick up removal
-          await restartApiServer();
           await interaction.reply({
             embeds: [
               createEmbed(
@@ -1063,22 +1060,9 @@ client.on("voiceStateUpdate", (oldState, newState) => {
 
 // --- API Server ---
 
-let apiServer = createApiServer(appConfig, soundsDir, log);
-
-const restartApiServer = async () => {
-  try {
-    log("info", "Restarting API server...");
-    if (apiServer.stopServer) {
-      await apiServer.stopServer();
-    }
-    // Create a new API server with the updated config
-    apiServer = createApiServer(appConfig, soundsDir, log);
-    apiServer.startServer();
-    log("info", "API server restarted successfully");
-  } catch (e: any) {
-    log("error", "Failed to restart API server", { error: e.message });
-  }
-};
+// The API reads the latest config via a getter, so no restart is needed
+// when config.json changes.
+const apiServer = createApiServer(() => appConfig, soundsDir, log);
 
 // --- Start ---
 
