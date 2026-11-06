@@ -1,6 +1,7 @@
 # Discord VC 効果音ボット (Super Soundboard) - Modified
 
-> [!WARNING] > **【重要】身内用・個人利用についての注意**
+> [!WARNING]
+> **【重要】身内用・個人利用についての注意**
 > このリポジトリはオリジナルの [Super Soundboard](https://github.com/kokushin/super-soundboard) をフォークし、個人的な用途に合わせて大幅に改造したものです。
 >
 > - **セキュリティ**: ユーザー入力に基づいてファイルを保存・削除する機能（`/sound add` 等）が含まれています。信頼できる身内のみのサーバーでの利用を想定しており、公開サーバーでの運用は推奨しません。
